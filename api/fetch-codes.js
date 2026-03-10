@@ -88,15 +88,15 @@ export default async function handler(req, res) {
         imap.openBox('INBOX', true, (err) => {
           if (err) return reject(err);
           
-          // Tìm email Netflix từ 7 ngày trước
+          // [SỬA 1] Tìm email Netflix trong 5 phút gần nhất (thay vì 7 ngày)
           const since = new Date();
-          since.setDate(since.getDate() - 7);
+          since.setMinutes(since.getMinutes() - 5);
           
           imap.search([['FROM', 'netflix'], ['SINCE', since]], (err, results) => {
             if (err) return reject(err);
             
             if (!results || results.length === 0) {
-              return reject(new Error('No Netflix emails found'));
+              return reject(new Error('Không tìm thấy email Netflix trong 5 phút gần nhất'));
             }
 
             // Lấy email mới nhất
@@ -107,19 +107,49 @@ export default async function handler(req, res) {
                 simpleParser(stream, (err, parsed) => {
                   if (err) return reject(err);
                   
-                  const content = parsed.text || parsed.html || '';
+                  const htmlContent = parsed.html || '';
+                  const textContent = parsed.text || '';
                   
                   // Tìm mã 4-6 chữ số
-                  const codeMatch = content.match(/\b(\d{4,6})\b/);
+                  const codeMatch = textContent.match(/\b(\d{4,6})\b/) || htmlContent.match(/\b(\d{4,6})\b/);
                   const code = codeMatch ? codeMatch[1] : null;
                   
-                  // Tìm household link
-                  const linkMatch = content.match(/https:\/\/www\.netflix\.com\/account\/update-primary-location[^\s"']*/);
-                  const householdLink = linkMatch ? linkMatch[0] : null;
+                  // [SỬA 2] Tìm link trong nút đỏ "Nhận mã" từ HTML email
+                  // Ưu tiên tìm link trong thẻ <a> chứa nút bấm (button/link có màu đỏ Netflix)
+                  let accessLink = null;
+
+                  // Thử tìm link trong thẻ <a> bao quanh nút có text "Nhận mã" hoặc "Get Code"
+                  const buttonLinkMatch = htmlContent.match(
+                    /<a[^>]+href=["']([^"']+)["'][^>]*>(?:[^<]*<[^>]+>)*[^<]*(Nhận mã|Get Code|Verify|Xác minh)[^<]*(?:<\/[^>]+>)*[^<]*<\/a>/i
+                  );
+                  if (buttonLinkMatch) {
+                    accessLink = buttonLinkMatch[1];
+                  }
+
+                  // Nếu không tìm được qua text nút, tìm link Netflix dạng /login hoặc /account
+                  if (!accessLink) {
+                    const allLinks = [...htmlContent.matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>/gi)];
+                    for (const match of allLinks) {
+                      const url = match[1];
+                      if (
+                        url.includes('netflix.com') &&
+                        (url.includes('/login') || url.includes('/account') || url.includes('nflxso') || url.includes('t.netflix'))
+                      ) {
+                        accessLink = url;
+                        break;
+                      }
+                    }
+                  }
+
+                  // Fallback: tìm link household như cũ
+                  if (!accessLink) {
+                    const linkMatch = htmlContent.match(/https:\/\/www\.netflix\.com\/account\/update-primary-location[^\s"']*/);
+                    accessLink = linkMatch ? linkMatch[0] : null;
+                  }
 
                   resolve({
                     code,
-                    householdLink,
+                    householdLink: accessLink,
                     timestamp: parsed.date,
                     emailSubject: parsed.subject
                   });
