@@ -8,6 +8,19 @@ function corsHeaders(res) {
   res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
 }
 
+function decrypt(text) {
+  if (!text || !process.env.ENCRYPTION_KEY || !text.includes(':')) return text;
+  try {
+    const key = crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest();
+    const parts = text.split(':');
+    const iv = Buffer.from(parts.shift(), 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    return Buffer.concat([decipher.update(Buffer.from(parts.join(':'), 'hex')), decipher.final()]).toString();
+  } catch {
+    return '';
+  }
+}
+
 function encrypt(text) {
   if (!text) return text;
   // Nếu không có ENCRYPTION_KEY thì lưu plain text
@@ -33,12 +46,13 @@ export default async function handler(req, res) {
     try {
       const { data: user } = await supabase
         .from('users')
-        .select('imap_email, imap_host, imap_port, imap_allowed_senders')
+        .select('imap_email, imap_password, imap_host, imap_port, imap_allowed_senders')
         .eq('id', userId)
         .single();
       if (user && user.imap_email) {
         return res.status(200).json({
           email: user.imap_email,
+          password: decrypt(user.imap_password) || '',
           host: user.imap_host,
           port: user.imap_port || 993,
           allowedSenders: user.imap_allowed_senders || 'info@account.netflix.com,netflix@netflix.com',
@@ -48,12 +62,13 @@ export default async function handler(req, res) {
       // Fallback: lấy shared config
       const { data: shared } = await supabase
         .from('imap_config')
-        .select('email, host, port, allowed_senders')
+        .select('email, password, host, port, allowed_senders')
         .eq('is_shared', true)
         .single();
       if (shared) {
         return res.status(200).json({
           email: shared.email,
+          password: decrypt(shared.password) || '',
           host: shared.host,
           port: shared.port || 993,
           allowedSenders: shared.allowed_senders || 'info@account.netflix.com,netflix@netflix.com',
@@ -71,12 +86,13 @@ export default async function handler(req, res) {
     try {
       const { data: shared } = await supabase
         .from('imap_config')
-        .select('email, host, port, allowed_senders')
+        .select('email, password, host, port, allowed_senders')
         .eq('is_shared', true)
         .single();
       if (!shared) return res.status(404).json({ error: 'No shared config' });
       return res.status(200).json({
         email: shared.email,
+        password: decrypt(shared.password) || '',
         host: shared.host,
         port: shared.port || 993,
         allowedSenders: shared.allowed_senders || '',
