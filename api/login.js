@@ -25,37 +25,16 @@ export default async function handler(req, res) {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
   try {
-    // Kiểm tra xem user đã tồn tại chưa
-    // Chỉ select các cột cần thiết thay vì select('*') để tránh lỗi schema cache
-    const { data: existingUser, error: selectError } = await supabase
+    // Chỉ cho phép đăng nhập nếu username đã được admin tạo sẵn trong database
+    const { data: user, error } = await supabase
       .from('users')
       .select('id, username, is_admin, imap_email, created_at')
       .eq('username', username)
       .single();
 
-    let user;
-
-    if (selectError && selectError.code !== 'PGRST116') {
-      // PGRST116 = no rows found, which is expected for new users
-      throw selectError;
-    }
-
-    if (existingUser) {
-      // User tồn tại
-      user = existingUser;
-    } else {
-      // Tạo user mới
-      const { data: newUser, error: insertError } = await supabase
-        .from('users')
-        .insert({
-          username,
-          is_admin: false
-        })
-        .select('id, username, is_admin, imap_email, created_at')
-        .single();
-
-      if (insertError) throw insertError;
-      user = newUser;
+    if (error || !user) {
+      // Không tìm thấy user — trả về lỗi, không tự tạo mới
+      return res.status(401).json({ error: 'Tài khoản không tồn tại. Liên hệ admin để được cấp quyền truy cập.' });
     }
 
     res.status(200).json({
