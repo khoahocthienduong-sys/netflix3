@@ -3,8 +3,31 @@ import { simpleParser } from 'mailparser';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 
+// ─── Helper: giải mã mật khẩu IMAP ──────────────────────────────────────────
+// PHẢI dùng SHA-256 để chuẩn hóa key về 32 bytes — giống hàm encrypt() trong
+// imap-config.js và save-user.js. Nếu không hash key, AES-256-CBC sẽ báo
+// "Invalid key length" và ném ra "Failed to decrypt IMAP password".
+function decrypt(text) {
+  if (!text) return text;
+  if (!process.env.ENCRYPTION_KEY) return text;
+  if (!text.includes(':')) return text; // plain text (chưa mã hóa)
+  try {
+    const key = crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest();
+    const parts = text.split(':');
+    const iv = Buffer.from(parts.shift(), 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    return Buffer.concat([
+      decipher.update(Buffer.from(parts.join(':'), 'hex')),
+      decipher.final(),
+    ]).toString();
+  } catch (err) {
+    console.error('Decryption error:', err);
+    throw new Error('Failed to decrypt IMAP password');
+  }
+}
+
 export default async function handler(req, res) {
-  // Cấu hình CORS cho Vercel
+  // ── CORS ──────────────────────────────────────────────────────────────────
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -23,6 +46,7 @@ export default async function handler(req, res) {
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
+  // Timeout toàn bộ request (30 giây)
   const requestTimeout = setTimeout(() => {
     if (!res.headersSent) {
       res.status(504).json({ message: 'Request timeout: Email fetch took too long' });
@@ -30,6 +54,7 @@ export default async function handler(req, res) {
   }, 30000);
 
   try {
+    // ── Lấy thông tin user ────────────────────────────────────────────────
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('*')
@@ -41,31 +66,40 @@ export default async function handler(req, res) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    if (!user.imap_email || !user.imap_host || !user.imap_password) {
-      clearTimeout(requestTimeout);
-      return res.status(400).json({ message: 'IMAP configuration incomplete for this user' });
+    // ── Xác định IMAP config: ưu tiên riêng của user, fallback sang shared ─
+    let imapEmail = user.imap_email;
+    let imapPassword = user.imap_password;
+    let imapHost = user.imap_host;
+    let imapPort = user.imap_port;
+
+    if (!imapEmail || !imapHost || !imapPassword) {
+      // Thử lấy shared config
+      const { data: shared } = await supabase
+        .from('imap_config')
+        .select('email, password, host, port')
+        .eq('is_shared', true)
+        .single();
+
+      if (shared && shared.email && shared.host && shared.password) {
+        imapEmail = shared.email;
+        imapPassword = shared.password;
+        imapHost = shared.host;
+        imapPort = shared.port;
+      } else {
+        clearTimeout(requestTimeout);
+        return res.status(400).json({ message: 'IMAP configuration incomplete for this user' });
+      }
     }
 
-    const decrypt = (text) => {
-      if (!text || !process.env.ENCRYPTION_KEY || !text.includes(':')) return text;
-      try {
-        // Dùng SHA-256 để chuẩn hóa key về đúng 32 bytes (AES-256 yêu cầu) — giống imap-config.js
-        const key = crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest();
-        const parts = text.split(':');
-        const iv = Buffer.from(parts.shift(), 'hex');
-        const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-        return Buffer.concat([decipher.update(Buffer.from(parts.join(':'), 'hex')), decipher.final()]).toString();
-      } catch (err) {
-        console.error('Decryption error:', err);
-        throw new Error('Failed to decrypt IMAP password');
-      }
-    };
+    // ── Giải mã mật khẩu ─────────────────────────────────────────────────
+    const decryptedPassword = decrypt(imapPassword);
 
+    // ── Kết nối IMAP ──────────────────────────────────────────────────────
     const imap = new Imap({
-      user: user.imap_email,
-      password: decrypt(user.imap_password),
-      host: user.imap_host,
-      port: user.imap_port || 993,
+      user: imapEmail,
+      password: decryptedPassword,
+      host: imapHost,
+      port: imapPort || 993,
       tls: true,
       tlsOptions: { rejectUnauthorized: false },
       connTimeout: 10000,
@@ -73,18 +107,25 @@ export default async function handler(req, res) {
     });
 
     const result = await new Promise((resolve, reject) => {
+      let settled = false;
+
+      const settle = (fn, val) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(imapTimeout);
+        try { imap.end(); } catch (_) {}
+        fn(val);
+      };
+
       const imapTimeout = setTimeout(() => {
-        imap.end();
-        reject(new Error('IMAP operation timeout: Email search took too long'));
+        settle(reject, new Error('IMAP operation timeout: Email search took too long'));
       }, 20000);
 
       imap.once('ready', () => {
         imap.openBox('INBOX', true, (err) => {
-          if (err) {
-            clearTimeout(imapTimeout);
-            return reject(err);
-          }
+          if (err) return settle(reject, err);
 
+          // Tìm email Netflix trong 7 ngày gần nhất
           const since = new Date();
           since.setDate(since.getDate() - 7);
 
@@ -95,15 +136,10 @@ export default async function handler(req, res) {
           };
 
           imap.search([['FROM', 'netflix'], ['SINCE', since]], (err, results) => {
-            if (err) {
-              clearTimeout(imapTimeout);
-              return reject(err);
-            }
+            if (err) return settle(reject, err);
 
             if (!results || results.length === 0) {
-              clearTimeout(imapTimeout);
-              imap.end();
-              return reject(new Error('No Netflix emails found in the last 7 days.'));
+              return settle(reject, new Error('No Netflix emails found in the last 7 days.'));
             }
 
             const recentResults = results.slice(-10);
@@ -130,8 +166,7 @@ export default async function handler(req, res) {
                         const codeMatch = textContent.match(/\b(\d{4,6})\b/);
                         const code = codeMatch ? codeMatch[1] : null;
 
-                        // Lấy tất cả href từ HTML (mailparser đã decode quoted-printable)
-                        // Fallback sang text nếu không có HTML
+                        // Lấy tất cả href Netflix từ HTML, fallback sang text
                         const extractNetflixLinks = (html, text) => {
                           if (html) {
                             const hrefs = [...html.matchAll(/href=["']([^"']+)["']/gi)]
@@ -148,7 +183,6 @@ export default async function handler(req, res) {
 
                         const allLinks = extractNetflixLinks(htmlContent, textContent);
 
-                        // Loại trừ link phụ/tracking/footer
                         const isExcluded = (u) =>
                           u.includes('lkid=') ||
                           u.includes('lnktrk=') ||
@@ -165,11 +199,8 @@ export default async function handler(req, res) {
 
                         const validLinks = allLinks.filter(u => !isExcluded(u));
 
-                        // Ưu tiên 1: /account/travel/verify (nút "Nhận mã")
                         const travelLink = validLinks.find(l => l.includes('/account/travel/verify')) || null;
-                        // Ưu tiên 2: /ilum?code= (nút "Phê duyệt đăng nhập")
                         const ilumLink = validLinks.find(l => l.includes('/ilum')) || null;
-                        // Ưu tiên 3: link household
                         const householdLink = validLinks.find(l =>
                           l.includes('update-primary-location') || l.includes('update-household')
                         ) || null;
@@ -181,52 +212,41 @@ export default async function handler(req, res) {
                             code,
                             householdLink: finalLink,
                             timestamp: emailDate || new Date().toISOString(),
-                            emailSubject: parsed.subject || 'Netflix Email'
+                            emailSubject: parsed.subject || 'Netflix Email',
                           };
                         }
                       }
-                    } catch (parseErr) {
+                    } catch (_) {
                       // bỏ qua lỗi parse từng email
                     }
                   }
 
                   if (processedCount >= totalToFetch) {
-                    clearTimeout(imapTimeout);
-                    imap.end();
-
                     if (foundEmail) {
-                      resolve(foundEmail);
+                      settle(resolve, foundEmail);
                     } else {
-                      reject(new Error('No Netflix email found in the last 5 minutes. Please wait for a new email and try again.'));
+                      settle(reject, new Error('No Netflix email found in the last 5 minutes. Please wait for a new email and try again.'));
                     }
                   }
                 });
               });
             });
 
-            f.once('error', (err) => {
-              clearTimeout(imapTimeout);
-              reject(err);
-            });
+            f.once('error', (err) => settle(reject, err));
 
             f.once('end', () => {
-              // Đợi message parsing hoàn tất
+              // Đợi message parsing hoàn tất — xử lý trong processedCount >= totalToFetch
             });
           });
         });
       });
 
-      imap.once('error', (err) => {
-        clearTimeout(imapTimeout);
-        reject(err);
-      });
+      imap.once('error', (err) => settle(reject, err));
 
-      // CHỈ gọi imap.connect() - KHÔNG gọi imap.openBox() ở đây (đã có trong imap.once('ready'))
       try {
         imap.connect();
       } catch (connectErr) {
-        clearTimeout(imapTimeout);
-        reject(connectErr);
+        settle(reject, connectErr);
       }
     });
 
