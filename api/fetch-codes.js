@@ -88,83 +88,46 @@ export default async function handler(req, res) {
         imap.openBox('INBOX', true, (err) => {
           if (err) return reject(err);
           
-          // Chỉ tìm email Netflix trong 5 phút gần nhất
-          const since = new Date(Date.now() - 5 * 60 * 1000);
-          const senders = allowedSenders
-            ? allowedSenders.split(',').map(s => s.trim()).filter(Boolean)
-            : ['info@account.netflix.com', 'netflix@netflix.com'];
-
-          // Tìm email từ bất kỳ sender nào trong danh sách
-          const searchCriteria = [['SINCE', since]];
-
-          imap.search(searchCriteria, (err, results) => {
+          // Tìm email Netflix từ 7 ngày trước
+          const since = new Date();
+          since.setDate(since.getDate() - 7);
+          
+          imap.search([['FROM', 'netflix'], ['SINCE', since]], (err, results) => {
             if (err) return reject(err);
-
+            
             if (!results || results.length === 0) {
-              return resolve({ code: null, householdLink: null, timestamp: null, emailSubject: null, expired: false });
+              return reject(new Error('No Netflix emails found'));
             }
 
-            // Lấy tất cả email trong 5 phút, xử lý từ mới nhất
-            const f = imap.fetch(results, { bodies: '' });
-            const emails = [];
-
+            // Lấy email mới nhất
+            const f = imap.fetch(results[results.length - 1], { bodies: '' });
+            
             f.on('message', (msg) => {
-              const emailData = {};
               msg.on('body', (stream) => {
                 simpleParser(stream, (err, parsed) => {
-                  if (err) return;
-                  emailData.parsed = parsed;
+                  if (err) return reject(err);
+                  
+                  const content = parsed.text || parsed.html || '';
+                  
+                  // Tìm mã 4-6 chữ số
+                  const codeMatch = content.match(/\b(\d{4,6})\b/);
+                  const code = codeMatch ? codeMatch[1] : null;
+                  
+                  // Tìm household link
+                  const linkMatch = content.match(/https:\/\/www\.netflix\.com\/account\/update-primary-location[^\s"']*/);
+                  const householdLink = linkMatch ? linkMatch[0] : null;
+
+                  resolve({
+                    code,
+                    householdLink,
+                    timestamp: parsed.date,
+                    emailSubject: parsed.subject
+                  });
                 });
               });
-              msg.once('end', () => emails.push(emailData));
             });
-
-            f.once('end', () => {
-              imap.end();
-
-              // Sắp xếp theo thời gian mới nhất
-              const sorted = emails
-                .filter(e => e.parsed && e.parsed.date)
-                .sort((a, b) => new Date(b.parsed.date) - new Date(a.parsed.date));
-
-              // Tìm email Netflix hợp lệ (từ đúng sender)
-              const netflixEmail = sorted.find(e => {
-                const from = (e.parsed.from?.text || '').toLowerCase();
-                return senders.some(s => from.includes(s.toLowerCase()));
-              });
-
-              if (!netflixEmail) {
-                return resolve({ code: null, householdLink: null, timestamp: null, emailSubject: null, expired: false });
-              }
-
-              const emailDate = new Date(netflixEmail.parsed.date);
-              const ageMs = Date.now() - emailDate.getTime();
-              const ageMinutes = ageMs / 60000;
-
-              // Nếu email quá 5 phút thì đánh dấu hết hạn
-              if (ageMinutes > 5) {
-                return resolve({ code: null, householdLink: null, timestamp: emailDate, emailSubject: netflixEmail.parsed.subject, expired: true });
-              }
-
-              const content = netflixEmail.parsed.text || netflixEmail.parsed.html || '';
-
-              // Tìm mã 4-6 chữ số
-              const codeMatch = content.match(/\b(\d{4,6})\b/);
-              const code = codeMatch ? codeMatch[1] : null;
-
-              // Tìm household link
-              const linkMatch = content.match(/https:\/\/www\.netflix\.com\/account\/update-primary-location[^\s"']*/);
-              const householdLink = linkMatch ? linkMatch[0] : null;
-
-              resolve({
-                code,
-                householdLink,
-                timestamp: emailDate,
-                emailSubject: netflixEmail.parsed.subject,
-                expired: false,
-                ageSeconds: Math.floor(ageMs / 1000)
-              });
-            });
+            
+            f.once('end', () => imap.end());
           });
         });
       });
