@@ -112,7 +112,6 @@ export default async function handler(req, res) {
         imap_host: host,
         imap_port: port || 993,
         imap_allowed_senders: allowedSenders || '',
-        updated_at: new Date().toISOString(),
       };
       if (password) updateData.imap_password = encrypt(password);
       const { error } = await supabase.from('users').update(updateData).eq('id', uid);
@@ -133,7 +132,6 @@ export default async function handler(req, res) {
         imap_host: null,
         imap_port: null,
         imap_allowed_senders: null,
-        updated_at: new Date().toISOString(),
       }).eq('id', userId);
       if (error) throw error;
       return res.status(200).json({ success: true });
