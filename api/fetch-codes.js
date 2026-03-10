@@ -183,11 +183,40 @@ export default async function handler(req, res) {
           const since = new Date();
           since.setDate(since.getDate() - 7);
 
-          imap.search([['FROM', 'netflix'], ['SINCE', since]], (err, results) => {
-            if (err) return settle(reject, err);
-            if (!results || results.length === 0) {
-              return settle(reject, new Error('No Netflix emails found in the last 7 days.'));
+          // Tìm cả email gốc từ Netflix và email được forward lại
+          // Dùng OR: (FROM netflix) HOẶC (SUBJECT netflix)
+          const searchCriteria = [
+            'OR',
+            ['FROM', 'netflix'],
+            ['SUBJECT', 'netflix'],
+            ['SINCE', since]
+          ];
+
+          imap.search(searchCriteria, (err, results) => {
+            if (err) {
+              // Fallback: nếu server không hỗ trợ OR, thử tìm theo FROM
+              imap.search([['FROM', 'netflix'], ['SINCE', since]], (err2, results2) => {
+                if (err2 || !results2 || results2.length === 0) {
+                  // Fallback cuối: lấy 20 email mới nhất bất kể
+                  imap.search([['SINCE', since]], (err3, results3) => {
+                    if (err3 || !results3 || results3.length === 0) {
+                      return settle(reject, new Error('Không tìm thấy email Netflix nào trong 7 ngày gần nhất.'));
+                    }
+                    processFetch(results3);
+                  });
+                } else {
+                  processFetch(results2);
+                }
+              });
+              return;
             }
+            if (!results || results.length === 0) {
+              return settle(reject, new Error('Không tìm thấy email Netflix nào trong 7 ngày gần nhất.'));
+            }
+            processFetch(results);
+          });
+
+          function processFetch(results) {
 
             // Lấy 10 email gần nhất
             const toFetch = results.slice(-10);
@@ -247,7 +276,7 @@ export default async function handler(req, res) {
 
             f.once('error', (err) => settle(reject, err));
             f.once('end', () => {});
-          });
+          } // end processFetch
         });
       });
 
