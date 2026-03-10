@@ -40,27 +40,15 @@ export default async function handler(req, res) {
     }
 
     if (existingUser) {
-      // User tồn tại, cập nhật last_signed_in
-      const { data: updatedUser, error: updateError } = await supabase
-        .from('users')
-        .update({
-          last_signed_in: new Date().toISOString()
-        })
-        .eq('id', existingUser.id)
-        .select()
-        .single();
-
-      if (updateError) throw updateError;
-      user = updatedUser;
+      // User tồn tại
+      user = existingUser;
     } else {
       // Tạo user mới
       const { data: newUser, error: insertError } = await supabase
         .from('users')
         .insert({
           username,
-          is_admin: false,
-          created_at: new Date().toISOString(),
-          last_signed_in: new Date().toISOString()
+          is_admin: false
         })
         .select()
         .single();
