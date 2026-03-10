@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import { trpc } from "@/lib/trpc";
 import { getSession, clearSession } from "./LoginPage";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +15,14 @@ interface FetchResult {
   emailSubject: string;
 }
 
+interface ImapConfigData {
+  email: string;
+  host: string;
+  port: number;
+  allowedSenders: string;
+  isShared?: boolean;
+}
+
 function isHouseholdLink(url: string): boolean {
   return url.includes("update-primary-location") || url.includes("update-household");
 }
@@ -25,28 +32,42 @@ export default function UserDashboard() {
   const session = getSession();
   const [result, setResult] = useState<FetchResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [imapConfig, setImapConfig] = useState<ImapConfigData | null>(null);
+  const [isFetching, setIsFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!session) navigate("/login");
+    if (!session) { navigate("/login"); return; }
+    // Lấy IMAP config của user
+    fetch(`/api/imap-config?action=user&userId=${session.id}`)
+      .then(r => r.json())
+      .then(data => { if (data && !data.error) setImapConfig(data); })
+      .catch(() => {});
   }, []);
 
   if (!session) return null;
 
-  const { data: imapConfig } = trpc.imapConfig.getUserConfig.useQuery(
-    { userId: session.id },
-    { retry: false }
-  );
+  const hasImapConfig = !!imapConfig;
 
-  const fetchMutation = trpc.netflix.fetchCode.useMutation({
-    onSuccess: (data) => {
+  const handleFetch = async () => {
+    setIsFetching(true);
+    setFetchError(null);
+    setResult(null);
+    try {
+      const res = await fetch(`/api/fetch-codes?userId=${session.id}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Không thể lấy mã Netflix");
       setResult(data as FetchResult);
       if (data.code) toast.success("Đã tìm thấy mã xác minh Netflix!");
       else if (data.householdLink) toast.success("Đã tìm thấy link Netflix!");
-    },
-    onError: (err) => {
-      toast.error(err.message || "Không thể lấy mã Netflix");
-    },
-  });
+    } catch (err: any) {
+      const msg = err.message || "Không thể lấy mã Netflix";
+      setFetchError(msg);
+      toast.error(msg);
+    } finally {
+      setIsFetching(false);
+    }
+  };
 
   const copyToClipboard = async (text: string) => {
     try {
@@ -58,8 +79,6 @@ export default function UserDashboard() {
       toast.error("Không thể sao chép");
     }
   };
-
-  const hasImapConfig = !!imapConfig;
 
   return (
     <div className="min-h-screen bg-background">
@@ -132,11 +151,11 @@ export default function UserDashboard() {
 
           {/* Fetch button */}
           <Button
-            onClick={() => fetchMutation.mutate({ userId: session.id })}
-            disabled={fetchMutation.isPending || !hasImapConfig}
+            onClick={handleFetch}
+            disabled={isFetching || !hasImapConfig}
             className="w-full h-12 bg-primary hover:bg-primary/90 text-white font-semibold text-base shadow-md shadow-primary/20 disabled:opacity-50"
           >
-            {fetchMutation.isPending ? (
+            {isFetching ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 Đang quét email...
@@ -150,7 +169,7 @@ export default function UserDashboard() {
           </Button>
 
           {/* Loading hint */}
-          {fetchMutation.isPending && (
+          {isFetching && (
             <div className="bg-card border border-border rounded-xl p-5 text-center">
               <div className="flex items-center justify-center gap-2 text-muted-foreground">
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -161,20 +180,20 @@ export default function UserDashboard() {
           )}
 
           {/* Error state */}
-          {fetchMutation.isError && (
+          {fetchError && !isFetching && (
             <div className="bg-red-50 border border-red-200 rounded-xl p-4 animate-fade-in-up">
               <div className="flex items-start gap-3">
                 <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium text-red-700">Không thể lấy mã</p>
-                  <p className="text-xs text-red-600 mt-0.5">{fetchMutation.error?.message}</p>
+                  <p className="text-xs text-red-600 mt-0.5">{fetchError}</p>
                 </div>
               </div>
             </div>
           )}
 
           {/* Result */}
-          {result && !fetchMutation.isPending && (
+          {result && !isFetching && (
             <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm animate-fade-in-up">
               <div className="h-1 bg-primary" />
               <div className="p-5 space-y-4">
@@ -266,7 +285,7 @@ export default function UserDashboard() {
           )}
 
           {/* Empty hint */}
-          {!result && !fetchMutation.isPending && !fetchMutation.isError && (
+          {!result && !isFetching && !fetchError && (
             <div className="text-center py-6">
               <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
                 <Shield className="w-5 h-5 text-muted-foreground" />
