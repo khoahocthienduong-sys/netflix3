@@ -28,9 +28,12 @@ export default async function handler(req, res) {
   try {
     // Mã hóa mật khẩu IMAP
     const encrypt = (text) => {
-      if (!text || !process.env.ENCRYPTION_KEY) return text;
+      if (!text) return text;
+      if (!process.env.ENCRYPTION_KEY) return text;
+      // Dùng SHA-256 để chuẩn hóa key về đúng 32 bytes (AES-256 yêu cầu)
+      const key = crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest();
       const iv = crypto.randomBytes(16);
-      const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(process.env.ENCRYPTION_KEY), iv);
+      const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
       const encrypted = Buffer.concat([cipher.update(text), cipher.final()]);
       return iv.toString('hex') + ':' + encrypted.toString('hex');
     };
