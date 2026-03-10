@@ -78,95 +78,126 @@ export default async function handler(req, res) {
       tlsOptions: { rejectUnauthorized: false }
     });
 
+    // [SỬA 1] Mốc thời gian 5 phút để lọc email sau khi fetch
+    // IMAP SINCE chỉ lọc theo ngày, không theo giờ/phút
+    // → Dùng SINCE hôm nay để giảm số email cần tải, rồi tự lọc theo timestamp chính xác
+    const cutoffTime = new Date(Date.now() - 5 * 60 * 1000); // 5 phút trước
+    const sinceToday = new Date();
+    sinceToday.setHours(0, 0, 0, 0); // đầu ngày hôm nay
+
     const result = await new Promise((resolve, reject) => {
       imap.once('ready', () => {
         imap.openBox('INBOX', true, (err) => {
           if (err) return reject(err);
           
-          // [SỬA 1] Chỉ lấy email trong 5 phút gần nhất
-          const since = new Date();
-          since.setMinutes(since.getMinutes() - 5);
-          
-          imap.search([['FROM', 'netflix'], ['SINCE', since]], (err, results) => {
+          imap.search([['FROM', 'netflix'], ['SINCE', sinceToday]], (err, results) => {
             if (err) return reject(err);
             
             if (!results || results.length === 0) {
-              return reject(new Error('Không tìm thấy email Netflix trong 5 phút gần nhất'));
+              return reject(new Error('Không tìm thấy email Netflix hôm nay'));
             }
 
-            const f = imap.fetch(results[results.length - 1], { bodies: '' });
+            // Lấy tối đa 10 email mới nhất để tìm
+            const toFetch = results.slice(-10);
+            const emails = [];
+            let pending = toFetch.length;
+
+            const f = imap.fetch(toFetch, { bodies: '' });
             
             f.on('message', (msg) => {
               msg.on('body', (stream) => {
                 simpleParser(stream, (err, parsed) => {
-                  if (err) return reject(err);
-                  
-                  const htmlContent = parsed.html || '';
-                  const textContent = parsed.text || '';
-                  
-                  // Tìm mã OTP 4-6 chữ số
-                  const codeMatch = textContent.match(/\b(\d{4,6})\b/) || htmlContent.match(/\b(\d{4,6})\b/);
-                  const code = codeMatch ? codeMatch[1] : null;
-                  
-                  // [SỬA 2] Tìm link nút đỏ từ HTML email
-                  // mailparser tự decode quoted-printable nên link trong HTML đã đầy đủ
-                  // Chỉ cần decode &amp; → &
-                  const rawHrefs = [...htmlContent.matchAll(/href=["']([^"']+)["']/gi)].map(m =>
-                    m[1].replace(/&amp;/g, '&')
-                  );
-
-                  // Danh sách các pattern cần loại trừ (link phụ, tracking, footer)
-                  const isExcluded = (u) =>
-                    u.includes('lkid=') ||
-                    u.includes('lnktrk=') ||
-                    u.includes('ManageAccountAccess') ||
-                    u.includes('password?') ||
-                    u.includes('notificationsettings') ||
-                    u.includes('TermsOfUse') ||
-                    u.includes('PrivacyPolicy') ||
-                    u.includes('browse?') ||
-                    u.includes('help.netflix') ||
-                    u.includes('denysignin') ||
-                    u.includes('unsubscribe');
-
-                  let accessLink = null;
-
-                  // Ưu tiên 1: /account/travel/verify (email "Mã truy cập tạm thời" - nút "Nhận mã")
-                  accessLink = rawHrefs.find(u =>
-                    u.includes('netflix.com') &&
-                    u.includes('/account/travel/verify') &&
-                    !isExcluded(u)
-                  ) || null;
-
-                  // Ưu tiên 2: /ilum?code= (email "Phê duyệt đăng nhập mới" - nút "Phê duyệt")
-                  if (!accessLink) {
-                    accessLink = rawHrefs.find(u =>
-                      u.includes('netflix.com') &&
-                      u.includes('/ilum') &&
-                      !isExcluded(u)
-                    ) || null;
-                  }
-
-                  // Ưu tiên 3: link household
-                  if (!accessLink) {
-                    accessLink = rawHrefs.find(u =>
-                      u.includes('netflix.com') &&
-                      (u.includes('update-primary-location') || u.includes('update-household')) &&
-                      !isExcluded(u)
-                    ) || null;
-                  }
-
-                  resolve({
-                    code,
-                    householdLink: accessLink,
-                    timestamp: parsed.date,
-                    emailSubject: parsed.subject
-                  });
+                  if (err) { pending--; if (pending === 0) finalize(); return; }
+                  emails.push(parsed);
+                  pending--;
+                  if (pending === 0) finalize();
                 });
               });
             });
-            
-            f.once('end', () => imap.end());
+
+            f.once('error', reject);
+            f.once('end', () => {
+              // Nếu finalize chưa được gọi (không có message nào)
+              if (pending > 0) finalize();
+            });
+
+            function finalize() {
+              imap.end();
+
+              // [SỬA 1] Lọc chính xác theo thời gian: chỉ giữ email trong 5 phút gần nhất
+              const recentEmails = emails.filter(p => p.date && new Date(p.date) >= cutoffTime);
+
+              if (recentEmails.length === 0) {
+                return reject(new Error('Không tìm thấy email Netflix trong 5 phút gần nhất'));
+              }
+
+              // Lấy email mới nhất trong số các email đủ điều kiện
+              recentEmails.sort((a, b) => new Date(b.date) - new Date(a.date));
+              const parsed = recentEmails[0];
+
+              const htmlContent = parsed.html || '';
+              const textContent = parsed.text || '';
+
+              // Tìm mã OTP 4-6 chữ số
+              const codeMatch = textContent.match(/\b(\d{4,6})\b/) || htmlContent.match(/\b(\d{4,6})\b/);
+              const code = codeMatch ? codeMatch[1] : null;
+
+              // [SỬA 2] Tìm link nút đỏ từ HTML email
+              // mailparser tự decode quoted-printable → link đầy đủ trong HTML
+              // Chỉ cần decode &amp; → &
+              const rawHrefs = [...htmlContent.matchAll(/href=["']([^"']+)["']/gi)].map(m =>
+                m[1].replace(/&amp;/g, '&')
+              );
+
+              // Các pattern cần loại trừ (link phụ, tracking, footer)
+              const isExcluded = (u) =>
+                u.includes('lkid=') ||
+                u.includes('lnktrk=') ||
+                u.includes('ManageAccountAccess') ||
+                u.includes('password?') ||
+                u.includes('notificationsettings') ||
+                u.includes('TermsOfUse') ||
+                u.includes('PrivacyPolicy') ||
+                u.includes('browse?') ||
+                u.includes('help.netflix') ||
+                u.includes('denysignin') ||
+                u.includes('unsubscribe') ||
+                u.includes('accountaccess');
+
+              let accessLink = null;
+
+              // Ưu tiên 1: /account/travel/verify (email "Mã truy cập tạm thời" - nút "Nhận mã")
+              accessLink = rawHrefs.find(u =>
+                u.includes('netflix.com') &&
+                u.includes('/account/travel/verify') &&
+                !isExcluded(u)
+              ) || null;
+
+              // Ưu tiên 2: /ilum?code= (email "Phê duyệt đăng nhập mới" - nút "Phê duyệt")
+              if (!accessLink) {
+                accessLink = rawHrefs.find(u =>
+                  u.includes('netflix.com') &&
+                  u.includes('/ilum') &&
+                  !isExcluded(u)
+                ) || null;
+              }
+
+              // Ưu tiên 3: link household
+              if (!accessLink) {
+                accessLink = rawHrefs.find(u =>
+                  u.includes('netflix.com') &&
+                  (u.includes('update-primary-location') || u.includes('update-household')) &&
+                  !isExcluded(u)
+                ) || null;
+              }
+
+              resolve({
+                code,
+                householdLink: accessLink,
+                timestamp: parsed.date,
+                emailSubject: parsed.subject
+              });
+            }
           });
         });
       });
