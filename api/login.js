@@ -26,9 +26,10 @@ export default async function handler(req, res) {
 
   try {
     // Kiểm tra xem user đã tồn tại chưa
+    // Chỉ select các cột cần thiết thay vì select('*') để tránh lỗi schema cache
     const { data: existingUser, error: selectError } = await supabase
       .from('users')
-      .select('*')
+      .select('id, username, is_admin, imap_email, created_at')
       .eq('username', username)
       .single();
 
@@ -50,7 +51,7 @@ export default async function handler(req, res) {
           username,
           is_admin: false
         })
-        .select()
+        .select('id, username, is_admin, imap_email, created_at')
         .single();
 
       if (insertError) throw insertError;
