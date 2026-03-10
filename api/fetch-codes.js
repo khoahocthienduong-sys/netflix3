@@ -24,10 +24,24 @@ export default async function handler(req, res) {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
   try {
-    // Lấy thông tin user từ Supabase
+    // Hàm giải mã dùng SHA-256 để chuẩn hóa key về đúng 32 bytes
+    const decrypt = (text) => {
+      if (!text || !process.env.ENCRYPTION_KEY || !text.includes(':')) return text;
+      try {
+        const key = crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest();
+        const parts = text.split(':');
+        const iv = Buffer.from(parts.shift(), 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+        return Buffer.concat([decipher.update(Buffer.from(parts.join(':'), 'hex')), decipher.final()]).toString();
+      } catch {
+        return text;
+      }
+    };
+
+    // Lấy thông tin user từ Supabase (chỉ lấy các cột cần thiết, tránh lỗi schema cache)
     const { data: user, error: userError } = await supabase
       .from('users')
-      .select('*')
+      .select('id, username, is_admin, imap_email, imap_password, imap_host, imap_port, imap_allowed_senders')
       .eq('id', userId)
       .single();
 
@@ -35,21 +49,36 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Giải mã mật khẩu IMAP
-    const decrypt = (text) => {
-      if (!text || !process.env.ENCRYPTION_KEY || !text.includes(':')) return text;
-      const parts = text.split(':');
-      const iv = Buffer.from(parts.shift(), 'hex');
-      const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(process.env.ENCRYPTION_KEY), iv);
-      return Buffer.concat([decipher.update(Buffer.from(parts.join(':'), 'hex')), decipher.final()]).toString();
-    };
+    // Xác định thông tin IMAP: dùng riêng nếu có, fallback sang Shared
+    let imapEmail = user.imap_email;
+    let imapPassword = decrypt(user.imap_password);
+    let imapHost = user.imap_host;
+    let imapPort = user.imap_port || 993;
+    let allowedSenders = user.imap_allowed_senders || 'info@account.netflix.com,netflix@netflix.com';
+
+    if (!imapEmail) {
+      // Lấy Shared IMAP config
+      const { data: shared } = await supabase
+        .from('imap_config')
+        .select('email, password, host, port, allowed_senders')
+        .eq('is_shared', true)
+        .single();
+      if (!shared) {
+        return res.status(400).json({ error: 'Chưa có cấu hình IMAP. Liên hệ admin.' });
+      }
+      imapEmail = shared.email;
+      imapPassword = decrypt(shared.password);
+      imapHost = shared.host;
+      imapPort = shared.port || 993;
+      allowedSenders = shared.allowed_senders || 'info@account.netflix.com,netflix@netflix.com';
+    }
 
     // Kết nối IMAP
     const imap = new Imap({
-      user: user.imap_email,
-      password: decrypt(user.imap_password),
-      host: user.imap_host,
-      port: user.imap_port || 993,
+      user: imapEmail,
+      password: imapPassword,
+      host: imapHost,
+      port: imapPort,
       tls: true,
       tlsOptions: { rejectUnauthorized: false }
     });
