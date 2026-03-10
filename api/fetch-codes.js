@@ -4,7 +4,6 @@ import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -16,10 +15,7 @@ export default async function handler(req, res) {
   }
 
   const { userId } = req.query;
-  
-  if (!userId) {
-    return res.status(400).json({ error: 'userId is required' });
-  }
+  if (!userId) return res.status(400).json({ error: 'userId is required' });
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
@@ -32,9 +28,7 @@ export default async function handler(req, res) {
         const iv = Buffer.from(parts.shift(), 'hex');
         const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
         return Buffer.concat([decipher.update(Buffer.from(parts.join(':'), 'hex')), decipher.final()]).toString();
-      } catch {
-        return text;
-      }
+      } catch { return text; }
     };
 
     const { data: user, error: userError } = await supabase
@@ -43,15 +37,12 @@ export default async function handler(req, res) {
       .eq('id', userId)
       .single();
 
-    if (userError || !user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (userError || !user) return res.status(404).json({ error: 'User not found' });
 
     let imapEmail = user.imap_email;
     let imapPassword = decrypt(user.imap_password);
     let imapHost = user.imap_host;
     let imapPort = user.imap_port || 993;
-    let allowedSenders = user.imap_allowed_senders || 'info@account.netflix.com,netflix@netflix.com';
 
     if (!imapEmail) {
       const { data: shared } = await supabase
@@ -59,149 +50,140 @@ export default async function handler(req, res) {
         .select('email, password, host, port, allowed_senders')
         .eq('is_shared', true)
         .single();
-      if (!shared) {
-        return res.status(400).json({ error: 'Chưa có cấu hình IMAP. Liên hệ admin.' });
-      }
+      if (!shared) return res.status(400).json({ error: 'Chưa có cấu hình IMAP. Liên hệ admin.' });
       imapEmail = shared.email;
       imapPassword = decrypt(shared.password);
       imapHost = shared.host;
       imapPort = shared.port || 993;
-      allowedSenders = shared.allowed_senders || 'info@account.netflix.com,netflix@netflix.com';
     }
 
-    const imap = new Imap({
-      user: imapEmail,
-      password: imapPassword,
-      host: imapHost,
-      port: imapPort,
-      tls: true,
-      tlsOptions: { rejectUnauthorized: false }
-    });
-
-    // [SỬA 1] Mốc thời gian 5 phút để lọc email sau khi fetch
-    // IMAP SINCE chỉ lọc theo ngày, không theo giờ/phút
-    // → Dùng SINCE hôm nay để giảm số email cần tải, rồi tự lọc theo timestamp chính xác
-    const cutoffTime = new Date(Date.now() - 5 * 60 * 1000); // 5 phút trước
+    // Mốc 5 phút để lọc sau khi fetch (IMAP SINCE chỉ lọc theo ngày, không theo phút)
+    const cutoffTime = new Date(Date.now() - 5 * 60 * 1000);
     const sinceToday = new Date();
-    sinceToday.setHours(0, 0, 0, 0); // đầu ngày hôm nay
+    sinceToday.setHours(0, 0, 0, 0);
 
     const result = await new Promise((resolve, reject) => {
+      const imap = new Imap({
+        user: imapEmail,
+        password: imapPassword,
+        host: imapHost,
+        port: imapPort,
+        tls: true,
+        tlsOptions: { rejectUnauthorized: false }
+      });
+
       imap.once('ready', () => {
         imap.openBox('INBOX', true, (err) => {
-          if (err) return reject(err);
-          
+          if (err) { imap.end(); return reject(err); }
+
           imap.search([['FROM', 'netflix'], ['SINCE', sinceToday]], (err, results) => {
-            if (err) return reject(err);
-            
+            if (err) { imap.end(); return reject(err); }
+
             if (!results || results.length === 0) {
+              imap.end();
               return reject(new Error('Không tìm thấy email Netflix hôm nay'));
             }
 
-            // Lấy tối đa 10 email mới nhất để tìm
+            // Lấy tối đa 10 email mới nhất
             const toFetch = results.slice(-10);
             const emails = [];
-            let pending = toFetch.length;
+            // FIX: dùng Promise để đảm bảo tất cả simpleParser chạy xong mới finalize
+            const parsePromises = [];
 
             const f = imap.fetch(toFetch, { bodies: '' });
-            
+
             f.on('message', (msg) => {
-              msg.on('body', (stream) => {
-                simpleParser(stream, (err, parsed) => {
-                  if (err) { pending--; if (pending === 0) finalize(); return; }
-                  emails.push(parsed);
-                  pending--;
-                  if (pending === 0) finalize();
+              const p = new Promise((res2) => {
+                msg.on('body', (stream) => {
+                  simpleParser(stream, (err, parsed) => {
+                    if (!err && parsed) emails.push(parsed);
+                    res2();
+                  });
+                });
+                msg.once('end', () => res2()); // fallback nếu không có body
+              });
+              parsePromises.push(p);
+            });
+
+            f.once('error', (err) => { imap.end(); reject(err); });
+
+            f.once('end', () => {
+              // Chờ TẤT CẢ simpleParser xong rồi mới xử lý
+              Promise.all(parsePromises).then(() => {
+                imap.end();
+
+                // Lọc chính xác theo timestamp 5 phút gần nhất
+                const recentEmails = emails.filter(p => p.date && new Date(p.date) >= cutoffTime);
+
+                if (recentEmails.length === 0) {
+                  return reject(new Error('Không tìm thấy email Netflix trong 5 phút gần nhất'));
+                }
+
+                // Lấy email mới nhất
+                recentEmails.sort((a, b) => new Date(b.date) - new Date(a.date));
+                const parsed = recentEmails[0];
+
+                const htmlContent = parsed.html || '';
+                const textContent = parsed.text || '';
+
+                // Tìm mã OTP 4-6 chữ số
+                const codeMatch = textContent.match(/\b(\d{4,6})\b/) || htmlContent.match(/\b(\d{4,6})\b/);
+                const code = codeMatch ? codeMatch[1] : null;
+
+                // Tìm link nút đỏ từ HTML (mailparser đã decode quoted-printable)
+                const rawHrefs = [...htmlContent.matchAll(/href=["']([^"']+)["']/gi)]
+                  .map(m => m[1].replace(/&amp;/g, '&'));
+
+                // Loại trừ các link phụ/tracking/footer
+                const isExcluded = (u) =>
+                  u.includes('lkid=') ||
+                  u.includes('lnktrk=') ||
+                  u.includes('ManageAccountAccess') ||
+                  u.includes('/password?') ||
+                  u.includes('notificationsettings') ||
+                  u.includes('TermsOfUse') ||
+                  u.includes('PrivacyPolicy') ||
+                  u.includes('/browse?') ||
+                  u.includes('help.netflix') ||
+                  u.includes('denysignin') ||
+                  u.includes('unsubscribe') ||
+                  u.includes('accountaccess');
+
+                let accessLink = null;
+
+                // Ưu tiên 1: /account/travel/verify (nút "Nhận mã" - Mã truy cập tạm thời)
+                accessLink = rawHrefs.find(u =>
+                  u.includes('netflix.com') && u.includes('/account/travel/verify') && !isExcluded(u)
+                ) || null;
+
+                // Ưu tiên 2: /ilum?code= (nút "Phê duyệt đăng nhập mới")
+                if (!accessLink) {
+                  accessLink = rawHrefs.find(u =>
+                    u.includes('netflix.com') && u.includes('/ilum') && !isExcluded(u)
+                  ) || null;
+                }
+
+                // Ưu tiên 3: link household
+                if (!accessLink) {
+                  accessLink = rawHrefs.find(u =>
+                    u.includes('netflix.com') &&
+                    (u.includes('update-primary-location') || u.includes('update-household')) &&
+                    !isExcluded(u)
+                  ) || null;
+                }
+
+                resolve({
+                  code,
+                  householdLink: accessLink,
+                  timestamp: parsed.date,
+                  emailSubject: parsed.subject
                 });
               });
             });
-
-            f.once('error', reject);
-            f.once('end', () => {
-              // Nếu finalize chưa được gọi (không có message nào)
-              if (pending > 0) finalize();
-            });
-
-            function finalize() {
-              imap.end();
-
-              // [SỬA 1] Lọc chính xác theo thời gian: chỉ giữ email trong 5 phút gần nhất
-              const recentEmails = emails.filter(p => p.date && new Date(p.date) >= cutoffTime);
-
-              if (recentEmails.length === 0) {
-                return reject(new Error('Không tìm thấy email Netflix trong 5 phút gần nhất'));
-              }
-
-              // Lấy email mới nhất trong số các email đủ điều kiện
-              recentEmails.sort((a, b) => new Date(b.date) - new Date(a.date));
-              const parsed = recentEmails[0];
-
-              const htmlContent = parsed.html || '';
-              const textContent = parsed.text || '';
-
-              // Tìm mã OTP 4-6 chữ số
-              const codeMatch = textContent.match(/\b(\d{4,6})\b/) || htmlContent.match(/\b(\d{4,6})\b/);
-              const code = codeMatch ? codeMatch[1] : null;
-
-              // [SỬA 2] Tìm link nút đỏ từ HTML email
-              // mailparser tự decode quoted-printable → link đầy đủ trong HTML
-              // Chỉ cần decode &amp; → &
-              const rawHrefs = [...htmlContent.matchAll(/href=["']([^"']+)["']/gi)].map(m =>
-                m[1].replace(/&amp;/g, '&')
-              );
-
-              // Các pattern cần loại trừ (link phụ, tracking, footer)
-              const isExcluded = (u) =>
-                u.includes('lkid=') ||
-                u.includes('lnktrk=') ||
-                u.includes('ManageAccountAccess') ||
-                u.includes('password?') ||
-                u.includes('notificationsettings') ||
-                u.includes('TermsOfUse') ||
-                u.includes('PrivacyPolicy') ||
-                u.includes('browse?') ||
-                u.includes('help.netflix') ||
-                u.includes('denysignin') ||
-                u.includes('unsubscribe') ||
-                u.includes('accountaccess');
-
-              let accessLink = null;
-
-              // Ưu tiên 1: /account/travel/verify (email "Mã truy cập tạm thời" - nút "Nhận mã")
-              accessLink = rawHrefs.find(u =>
-                u.includes('netflix.com') &&
-                u.includes('/account/travel/verify') &&
-                !isExcluded(u)
-              ) || null;
-
-              // Ưu tiên 2: /ilum?code= (email "Phê duyệt đăng nhập mới" - nút "Phê duyệt")
-              if (!accessLink) {
-                accessLink = rawHrefs.find(u =>
-                  u.includes('netflix.com') &&
-                  u.includes('/ilum') &&
-                  !isExcluded(u)
-                ) || null;
-              }
-
-              // Ưu tiên 3: link household
-              if (!accessLink) {
-                accessLink = rawHrefs.find(u =>
-                  u.includes('netflix.com') &&
-                  (u.includes('update-primary-location') || u.includes('update-household')) &&
-                  !isExcluded(u)
-                ) || null;
-              }
-
-              resolve({
-                code,
-                householdLink: accessLink,
-                timestamp: parsed.date,
-                emailSubject: parsed.subject
-              });
-            }
           });
         });
       });
-      
+
       imap.once('error', reject);
       imap.connect();
     });
