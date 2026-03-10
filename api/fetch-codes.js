@@ -24,7 +24,6 @@ export default async function handler(req, res) {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
   try {
-    // Hàm giải mã dùng SHA-256 để chuẩn hóa key về đúng 32 bytes
     const decrypt = (text) => {
       if (!text || !process.env.ENCRYPTION_KEY || !text.includes(':')) return text;
       try {
@@ -38,7 +37,6 @@ export default async function handler(req, res) {
       }
     };
 
-    // Lấy thông tin user từ Supabase (chỉ lấy các cột cần thiết, tránh lỗi schema cache)
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, username, is_admin, imap_email, imap_password, imap_host, imap_port, imap_allowed_senders')
@@ -49,7 +47,6 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Xác định thông tin IMAP: dùng riêng nếu có, fallback sang Shared
     let imapEmail = user.imap_email;
     let imapPassword = decrypt(user.imap_password);
     let imapHost = user.imap_host;
@@ -57,7 +54,6 @@ export default async function handler(req, res) {
     let allowedSenders = user.imap_allowed_senders || 'info@account.netflix.com,netflix@netflix.com';
 
     if (!imapEmail) {
-      // Lấy Shared IMAP config
       const { data: shared } = await supabase
         .from('imap_config')
         .select('email, password, host, port, allowed_senders')
@@ -73,7 +69,6 @@ export default async function handler(req, res) {
       allowedSenders = shared.allowed_senders || 'info@account.netflix.com,netflix@netflix.com';
     }
 
-    // Kết nối IMAP
     const imap = new Imap({
       user: imapEmail,
       password: imapPassword,
@@ -88,7 +83,7 @@ export default async function handler(req, res) {
         imap.openBox('INBOX', true, (err) => {
           if (err) return reject(err);
           
-          // [SỬA 1] Tìm email Netflix trong 5 phút gần nhất
+          // [SỬA 1] Chỉ lấy email trong 5 phút gần nhất
           const since = new Date();
           since.setMinutes(since.getMinutes() - 5);
           
@@ -99,7 +94,6 @@ export default async function handler(req, res) {
               return reject(new Error('Không tìm thấy email Netflix trong 5 phút gần nhất'));
             }
 
-            // Lấy email mới nhất
             const f = imap.fetch(results[results.length - 1], { bodies: '' });
             
             f.on('message', (msg) => {
@@ -110,67 +104,55 @@ export default async function handler(req, res) {
                   const htmlContent = parsed.html || '';
                   const textContent = parsed.text || '';
                   
-                  // Tìm mã 4-6 chữ số (OTP)
+                  // Tìm mã OTP 4-6 chữ số
                   const codeMatch = textContent.match(/\b(\d{4,6})\b/) || htmlContent.match(/\b(\d{4,6})\b/);
                   const code = codeMatch ? codeMatch[1] : null;
                   
-                  // [SỬA 2] Tìm link từ nút đỏ trong email Netflix
-                  // Netflix dùng 2 dạng link chính:
-                  //   - /account/travel/verify?nftoken=...   → email "Mã truy cập tạm thời" (nút "Nhận mã")
-                  //   - /account/login-with-email?nftoken=... → email "Phê duyệt đăng nhập mới" (nút "Phê duyệt")
-                  //   - /account/update-primary-location...  → email Household
-                  let accessLink = null;
-
-                  // Lấy toàn bộ href từ HTML, bao gồm cả link bị HTML-encode (&amp;)
+                  // [SỬA 2] Tìm link nút đỏ từ HTML email
+                  // mailparser tự decode quoted-printable nên link trong HTML đã đầy đủ
+                  // Chỉ cần decode &amp; → &
                   const rawHrefs = [...htmlContent.matchAll(/href=["']([^"']+)["']/gi)].map(m =>
                     m[1].replace(/&amp;/g, '&')
                   );
 
-                  // Ưu tiên 1: link travel/verify (nút "Nhận mã" - xác thực tạm thời khi đi du lịch)
+                  // Danh sách các pattern cần loại trừ (link phụ, tracking, footer)
+                  const isExcluded = (u) =>
+                    u.includes('lkid=') ||
+                    u.includes('lnktrk=') ||
+                    u.includes('ManageAccountAccess') ||
+                    u.includes('password?') ||
+                    u.includes('notificationsettings') ||
+                    u.includes('TermsOfUse') ||
+                    u.includes('PrivacyPolicy') ||
+                    u.includes('browse?') ||
+                    u.includes('help.netflix') ||
+                    u.includes('denysignin') ||
+                    u.includes('unsubscribe');
+
+                  let accessLink = null;
+
+                  // Ưu tiên 1: /account/travel/verify (email "Mã truy cập tạm thời" - nút "Nhận mã")
                   accessLink = rawHrefs.find(u =>
-                    u.includes('netflix.com') && u.includes('/account/travel/verify')
+                    u.includes('netflix.com') &&
+                    u.includes('/account/travel/verify') &&
+                    !isExcluded(u)
                   ) || null;
 
-                  // Ưu tiên 2: link /ilum?code= (nút "Phê duyệt đăng nhập mới")
-                  if (!accessLink) {
-                    accessLink = rawHrefs.find(u =>
-                      u.includes('netflix.com') && u.includes('/ilum')
-                    ) || null;
-                  }
-
-                  // Ưu tiên 3: link login-with-email
-                  if (!accessLink) {
-                    accessLink = rawHrefs.find(u =>
-                      u.includes('netflix.com') && u.includes('/account/login-with-email')
-                    ) || null;
-                  }
-
-                  // Ưu tiên 4: bất kỳ link nào có nftoken (token xác thực của Netflix)
-                  if (!accessLink) {
-                    accessLink = rawHrefs.find(u =>
-                      u.includes('netflix.com') && u.includes('nftoken')
-                    ) || null;
-                  }
-
-                  // Ưu tiên 4: link household
+                  // Ưu tiên 2: /ilum?code= (email "Phê duyệt đăng nhập mới" - nút "Phê duyệt")
                   if (!accessLink) {
                     accessLink = rawHrefs.find(u =>
                       u.includes('netflix.com') &&
-                      (u.includes('update-primary-location') || u.includes('update-household'))
+                      u.includes('/ilum') &&
+                      !isExcluded(u)
                     ) || null;
                   }
 
-                  // Ưu tiên 5: fallback - bất kỳ link netflix.com/account nào không phải link phụ
-                  // Loại trừ: accountaccess (link footer), lkid (tracking link), help, support
+                  // Ưu tiên 3: link household
                   if (!accessLink) {
                     accessLink = rawHrefs.find(u =>
-                      u.includes('netflix.com/account') &&
-                      !u.includes('accountaccess') &&
-                      !u.includes('lkid') &&
-                      !u.includes('lnktrk') &&
-                      !u.includes('help') &&
-                      !u.includes('support') &&
-                      !u.includes('contactus')
+                      u.includes('netflix.com') &&
+                      (u.includes('update-primary-location') || u.includes('update-household')) &&
+                      !isExcluded(u)
                     ) || null;
                   }
 
