@@ -49,9 +49,11 @@ export default async function handler(req, res) {
     const decrypt = (text) => {
       if (!text || !process.env.ENCRYPTION_KEY || !text.includes(':')) return text;
       try {
+        // Dùng SHA-256 để chuẩn hóa key về đúng 32 bytes (AES-256 yêu cầu) — giống imap-config.js
+        const key = crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest();
         const parts = text.split(':');
         const iv = Buffer.from(parts.shift(), 'hex');
-        const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(process.env.ENCRYPTION_KEY), iv);
+        const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
         return Buffer.concat([decipher.update(Buffer.from(parts.join(':'), 'hex')), decipher.final()]).toString();
       } catch (err) {
         console.error('Decryption error:', err);
