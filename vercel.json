@@ -9,6 +9,8 @@
     { "source": "/api/fetch-codes/:userId", "destination": "/api/fetch-codes.js?userId=:userId" },
     { "source": "/api/save-user", "destination": "/api/save-user.js" },
     { "source": "/api/get-user/:userId", "destination": "/api/get-user.js?userId=:userId" },
+    { "source": "/api/admin-users", "destination": "/api/admin-users.js" },
+    { "source": "/api/imap-config", "destination": "/api/imap-config.js" },
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
