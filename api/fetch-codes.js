@@ -23,7 +23,8 @@ function decrypt(text) {
   }
 }
 
-// ─── Extract link Netflix từ HTML ─────────────────────────────────────────────
+// ─── Extract link Netflix từ HTML hoặc text ───────────────────────────────────
+// mailparser decode quoted-printable nhưng giữ &amp; trong href → cần replace
 function extractNetflixLinks(html, text) {
   if (html) {
     const hrefs = [...html.matchAll(/href=["']([^"']+)["']/gi)]
@@ -32,13 +33,14 @@ function extractNetflixLinks(html, text) {
     if (hrefs.length > 0) return hrefs;
   }
   if (text) {
+    // Tìm URL trong plain text (kể cả trong email forward có thể bị wrap)
     const matches = text.match(/https?:\/\/(?:www\.)?netflix\.com\/[^\s"'<>\)\]\n]+/gi) || [];
-    return matches.map(l => l.replace(/&amp;/g, '&').replace(/["'>]+$/, ''));
+    return matches.map(l => l.replace(/&amp;/g, '&').replace(/["'>)\]]+$/, ''));
   }
   return [];
 }
 
-// ─── Chỉ giữ lại link hành động thực sự (whitelist) ──────────────────────────
+// ─── Whitelist: chỉ giữ link hành động thực sự ────────────────────────────────
 function isActionLink(u) {
   return (
     u.includes('/account/travel/verify') ||
@@ -49,12 +51,23 @@ function isActionLink(u) {
 }
 
 // ─── Parse email → { type, value, timestamp, subject } hoặc null ─────────────
+// Ưu tiên: link > mã OTP
 function parseEmail(parsed) {
   const emailDate = parsed.date;
   if (!emailDate) return null;
 
   const htmlContent = parsed.html || '';
   const textContent = parsed.text || '';
+  const subject = parsed.subject || '';
+
+  // Bỏ qua email không liên quan đến Netflix
+  const isNetflixRelated =
+    (parsed.from?.text || '').toLowerCase().includes('netflix') ||
+    subject.toLowerCase().includes('netflix') ||
+    htmlContent.toLowerCase().includes('netflix') ||
+    textContent.toLowerCase().includes('netflix');
+
+  if (!isNetflixRelated) return null;
 
   // Tìm link hành động
   const allLinks = extractNetflixLinks(htmlContent, textContent);
@@ -69,39 +82,44 @@ function parseEmail(parsed) {
   const finalLink = travelLink || ilumLink || householdLink || null;
 
   if (finalLink) {
-    return { type: 'link', value: finalLink, timestamp: emailDate, subject: parsed.subject || 'Netflix Email' };
+    return { type: 'link', value: finalLink, timestamp: emailDate, subject: subject || 'Netflix Email' };
   }
 
-  // Fallback: mã OTP 4-6 chữ số
-  const codeMatch = textContent.match(/\b(\d{4,6})\b/);
-  if (codeMatch) {
-    return { type: 'code', value: codeMatch[1], timestamp: emailDate, subject: parsed.subject || 'Netflix Email' };
+  // Fallback: mã OTP
+  // Tìm mã 4-8 chữ số đứng độc lập (không phải số điện thoại, năm, v.v.)
+  // Ưu tiên tìm trong context "mã", "code", "verify" trước
+  const codeContextMatch = textContent.match(
+    /(?:m[aã]|code|verify|verification|x[aá]c\s*minh|x[aá]c\s*nh[aậ]n)[^\d]{0,30}(\d{4,8})/i
+  );
+  if (codeContextMatch) {
+    return { type: 'code', value: codeContextMatch[1], timestamp: emailDate, subject: subject || 'Netflix Email' };
+  }
+
+  // Tìm số 4-8 chữ số đứng trên dòng riêng (thường là OTP)
+  const standaloneCode = textContent.match(/^\s*(\d{4,8})\s*$/m);
+  if (standaloneCode) {
+    return { type: 'code', value: standaloneCode[1], timestamp: emailDate, subject: subject || 'Netflix Email' };
   }
 
   return null;
 }
 
-// ─── Tìm email trong INBOX với fallback 3 bước ───────────────────────────────
+// ─── Search email với 4 bước fallback ────────────────────────────────────────
 function searchEmails(imap, since) {
   return new Promise((resolve, reject) => {
     // Bước 1: OR (FROM netflix) (SUBJECT netflix) — bắt cả email gốc lẫn forward
-    // Cú pháp imap library: ['OR', ['FROM','netflix'], ['SUBJECT','netflix']]
-    // Nhưng SINCE phải là điều kiện riêng, kết hợp bằng AND ngầm định
     imap.search([['OR', ['FROM', 'netflix'], ['SUBJECT', 'netflix']], ['SINCE', since]], (err, results) => {
-      if (!err && results && results.length > 0) {
-        return resolve(results);
-      }
+      if (!err && results && results.length > 0) return resolve(results);
+
       // Bước 2: chỉ FROM netflix
       imap.search([['FROM', 'netflix'], ['SINCE', since]], (err2, results2) => {
-        if (!err2 && results2 && results2.length > 0) {
-          return resolve(results2);
-        }
-        // Bước 3: chỉ SUBJECT netflix (bắt email forward)
+        if (!err2 && results2 && results2.length > 0) return resolve(results2);
+
+        // Bước 3: chỉ SUBJECT netflix (bắt email forward "Fwd: ...netflix...")
         imap.search([['SUBJECT', 'netflix'], ['SINCE', since]], (err3, results3) => {
-          if (!err3 && results3 && results3.length > 0) {
-            return resolve(results3);
-          }
-          // Bước 4: lấy tất cả email 7 ngày gần nhất, tự lọc
+          if (!err3 && results3 && results3.length > 0) return resolve(results3);
+
+          // Bước 4: lấy tất cả email 7 ngày gần nhất, tự lọc theo nội dung
           imap.search([['SINCE', since]], (err4, results4) => {
             if (err4 || !results4 || results4.length === 0) {
               return reject(new Error('Không tìm thấy email nào trong 7 ngày gần nhất.'));
@@ -207,8 +225,8 @@ export default async function handler(req, res) {
           // Tìm email: bắt cả email gốc từ Netflix lẫn email forward
           const results = await searchEmails(imap, since);
 
-          // Lấy 15 email gần nhất để tăng khả năng tìm thấy
-          const toFetch = results.slice(-15);
+          // Lấy 20 email gần nhất để tăng khả năng tìm thấy
+          const toFetch = results.slice(-20);
           const parsed_emails = [];
           let processedCount = 0;
 
@@ -268,10 +286,11 @@ export default async function handler(req, res) {
   } catch (error) {
     clearTimeout(requestTimeout);
     let errorMessage = error.message || 'Unknown error occurred';
-    if (error.message?.includes('ECONNREFUSED')) errorMessage = 'Connection refused: Cannot connect to email server.';
-    else if (error.message?.includes('ENOTFOUND')) errorMessage = 'Email server not found: Invalid IMAP host.';
-    else if (error.message?.includes('ETIMEDOUT')) errorMessage = 'Connection timeout: Email server is not responding.';
-    else if (error.message?.includes('Invalid login')) errorMessage = 'Authentication failed: Invalid email or password.';
+    if (error.message?.includes('ECONNREFUSED')) errorMessage = 'Không thể kết nối đến email server.';
+    else if (error.message?.includes('ENOTFOUND')) errorMessage = 'Không tìm thấy email server. Kiểm tra lại IMAP host.';
+    else if (error.message?.includes('ETIMEDOUT')) errorMessage = 'Kết nối email server bị timeout.';
+    else if (error.message?.includes('Invalid login') || error.message?.includes('Authentication failed')) errorMessage = 'Sai email hoặc mật khẩu IMAP.';
+    else if (error.message?.includes('IMAP operation timeout')) errorMessage = error.message;
     console.error('Fetch Code Error:', error);
     res.status(500).json({ message: errorMessage });
   }
