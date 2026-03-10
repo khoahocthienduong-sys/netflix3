@@ -88,11 +88,19 @@ export default function AdminDashboard() {
             <Settings className="w-4 h-4" />
             Cấu hình IMAP
           </button>
+          {/* Nút Đăng xuất ngay dưới các nút điều hướng */}
+          <button
+            onClick={() => { clearSession(); navigate("/login"); }}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-muted-foreground hover:bg-accent hover:text-foreground mt-1"
+          >
+            <LogOut className="w-4 h-4" />
+            Đăng xuất
+          </button>
         </nav>
 
         {/* User info */}
         <div className="p-3 border-t border-sidebar-border">
-          <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg bg-accent/50 mb-2">
+          <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg bg-accent/50">
             <div className="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
               <Shield className="w-3.5 h-3.5 text-primary" />
             </div>
@@ -101,15 +109,6 @@ export default function AdminDashboard() {
               <p className="text-[10px] text-muted-foreground">Administrator</p>
             </div>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full h-8 text-xs border-border text-muted-foreground hover:text-foreground"
-            onClick={() => { clearSession(); navigate("/login"); }}
-          >
-            <LogOut className="w-3 h-3 mr-1.5" />
-            Đăng xuất
-          </Button>
         </div>
       </aside>
 
