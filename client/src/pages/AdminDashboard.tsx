@@ -396,13 +396,23 @@ function UserImapModal({
       .then(r => r.json())
       .then(data => {
         if (data && !data.error && !data.isShared) {
+          // User có IMAP riêng — hiện dữ liệu riêng
           setConfig(data);
           setEmail(data.email || "");
+          setPassword(data.password || "");
+          setHost(data.host || "");
+          setPort(String(data.port || 993));
+          setAllowedSenders(data.allowedSenders || "info@account.netflix.com,netflix@netflix.com");
+        } else if (data && data.isShared) {
+          // User đang dùng Shared — pre-fill từ Shared config
+          setConfig(data);
+          setEmail(data.email || "");
+          setPassword(data.password || "");
           setHost(data.host || "");
           setPort(String(data.port || 993));
           setAllowedSenders(data.allowedSenders || "info@account.netflix.com,netflix@netflix.com");
         } else {
-          setConfig(data?.isShared ? data : null);
+          setConfig(null);
         }
       })
       .catch(() => setConfig(null))
@@ -509,12 +519,8 @@ function UserImapModal({
                   </Label>
                   <div className="relative">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-                    <Input type={showPassword ? "text" : "password"} placeholder="App password..." value={password}
-                      onChange={(e) => setPassword(e.target.value)} className="pl-8 pr-9 h-9 text-sm bg-input border-border" />
-                    <button type="button" onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                      {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
+                    <Input type="text" placeholder="App password..." value={password}
+                      onChange={(e) => setPassword(e.target.value)} className="pl-8 h-9 text-sm bg-input border-border" />
                   </div>
                 </div>
                 <div className="space-y-1.5">
