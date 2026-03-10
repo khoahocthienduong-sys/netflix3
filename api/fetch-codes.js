@@ -208,15 +208,15 @@ export default async function handler(req, res) {
 
                   if (processedCount >= toFetch.length) {
                     if (parsed_emails.length === 0) {
-                      return settle(reject, new Error('No Netflix email found in the last 5 minutes. Please wait for a new email and try again.'));
+                      return settle(reject, new Error('Không tìm thấy email Netflix nào trong 7 ngày gần nhất có link hoặc mã hợp lệ.'));
                     }
 
-                    // Lọc chỉ email trong 5 phút gần nhất
-                    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-                    const recent = parsed_emails.filter(e => new Date(e.timestamp) >= fiveMinutesAgo);
+                    // Lọc email trong 30 phút gần nhất (link Netflix hết hạn sau 15 phút)
+                    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+                    const recent = parsed_emails.filter(e => new Date(e.timestamp) >= thirtyMinutesAgo);
 
                     if (recent.length === 0) {
-                      return settle(reject, new Error('No Netflix email found in the last 5 minutes. Please wait for a new email and try again.'));
+                      return settle(reject, new Error('Không tìm thấy email Netflix trong 30 phút gần nhất. Vui lòng yêu cầu Netflix gửi lại email và thử lại.'));
                     }
 
                     // Sắp xếp theo thời gian mới nhất trước
