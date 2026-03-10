@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import { trpc } from "@/lib/trpc";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,23 +38,44 @@ export default function LoginPage() {
   const [, navigate] = useLocation();
   const [username, setUsername] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const loginMutation = trpc.users.login.useMutation({
-    onSuccess: (user) => {
-      saveSession(user as NetFetchUser);
-      if (user.isAdmin) navigate("/admin");
-      else navigate("/dashboard");
-    },
-    onError: (err) => {
-      setError(err.message || "Đăng nhập thất bại. Vui lòng thử lại.");
-    },
-  });
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim()) return;
+    
     setError(null);
-    loginMutation.mutate({ username: username.trim() });
+    setIsLoading(true);
+
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ username: username.trim() }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Đăng nhập thất bại");
+      }
+
+      const user = await response.json();
+      saveSession(user as NetFetchUser);
+      
+      if (user.isAdmin) {
+        navigate("/admin");
+      } else {
+        navigate("/dashboard");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Đăng nhập thất bại. Vui lòng thử lại.";
+      setError(message);
+      toast.error(message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -101,7 +122,7 @@ export default function LoginPage() {
                 onChange={(e) => { setUsername(e.target.value); setError(null); }}
                 autoFocus
                 autoComplete="username"
-                disabled={loginMutation.isPending}
+                disabled={isLoading}
                 className="h-10 bg-input border-border focus-visible:ring-primary/30 focus-visible:border-primary"
               />
               {error && (
@@ -114,10 +135,10 @@ export default function LoginPage() {
 
             <Button
               type="submit"
-              disabled={loginMutation.isPending || !username.trim()}
+              disabled={isLoading || !username.trim()}
               className="w-full h-10 bg-primary hover:bg-primary/90 text-primary-foreground font-medium shadow-sm group"
             >
-              {loginMutation.isPending ? (
+              {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Đang đăng nhập...
