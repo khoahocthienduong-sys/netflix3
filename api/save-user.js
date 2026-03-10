@@ -57,8 +57,7 @@ export default async function handler(req, res) {
           imap_email,
           imap_password: encryptedPassword,
           imap_host,
-          imap_port: imap_port || 993,
-          updated_at: new Date().toISOString()
+          imap_port: imap_port || 993
         })
         .eq('id', existingUser.id)
         .select()
