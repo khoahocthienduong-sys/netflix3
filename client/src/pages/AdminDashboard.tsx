@@ -1,7 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import { trpc } from "@/lib/trpc";
 import { getSession, clearSession, NetFetchUser } from "./LoginPage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,12 +10,28 @@ import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import {
-  Tv2, Users, Settings, LogOut, Plus, Trash2, Loader2,
+  Tv2, Users, Settings, LogOut, Trash2, Loader2,
   Shield, Mail, Server, Lock, RefreshCw, CheckCircle2,
   AlertCircle, Eye, EyeOff, Globe, X, UserPlus, Wifi
 } from "lucide-react";
 
 type Tab = "users" | "imap";
+
+interface UserItem {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+  createdAt: string;
+  hasImapConfigured: boolean;
+}
+
+interface ImapConfigData {
+  email: string;
+  host: string;
+  port: number;
+  allowedSenders: string;
+  isShared?: boolean;
+}
 
 export default function AdminDashboard() {
   const [, navigate] = useLocation();
@@ -115,28 +130,65 @@ function UsersTab() {
   const [deleteUserId, setDeleteUserId] = useState<string | null>(null);
   const [newUsername, setNewUsername] = useState("");
   const [imapUser, setImapUser] = useState<{ id: string; username: string } | null>(null);
+  const [users, setUsers] = useState<UserItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isCreating, setIsCreating] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  const utils = trpc.useUtils();
-  const { data: users = [], isLoading } = trpc.users.getAll.useQuery();
+  const loadUsers = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const res = await fetch("/api/admin-users");
+      if (!res.ok) throw new Error("Không thể tải danh sách users");
+      const data = await res.json();
+      setUsers(data);
+    } catch (err: any) {
+      toast.error(err.message || "Lỗi tải users");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
-  const createMutation = trpc.users.create.useMutation({
-    onSuccess: () => {
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  const handleCreate = async () => {
+    if (!newUsername.trim()) return;
+    setIsCreating(true);
+    try {
+      const res = await fetch("/api/admin-users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: newUsername.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Tạo user thất bại");
       toast.success("Tạo user thành công");
       setShowCreateDialog(false);
       setNewUsername("");
-      utils.users.getAll.invalidate();
-    },
-    onError: (err) => toast.error(err.message),
-  });
+      loadUsers();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsCreating(false);
+    }
+  };
 
-  const deleteMutation = trpc.users.delete.useMutation({
-    onSuccess: () => {
+  const handleDelete = async () => {
+    if (!deleteUserId) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/admin-users?userId=${deleteUserId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Xóa user thất bại");
       toast.success("Đã xóa user");
       setDeleteUserId(null);
-      utils.users.getAll.invalidate();
-    },
-    onError: (err) => toast.error(err.message),
-  });
+      loadUsers();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -260,7 +312,7 @@ function UsersTab() {
               placeholder="Nhập username..."
               value={newUsername}
               onChange={(e) => setNewUsername(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && newUsername.trim() && createMutation.mutate({ username: newUsername.trim() })}
+              onKeyDown={(e) => e.key === "Enter" && newUsername.trim() && handleCreate()}
               className="bg-input border-border"
               autoFocus
             />
@@ -268,11 +320,11 @@ function UsersTab() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowCreateDialog(false)} className="border-border">Hủy</Button>
             <Button
-              onClick={() => createMutation.mutate({ username: newUsername.trim() })}
-              disabled={!newUsername.trim() || createMutation.isPending}
+              onClick={handleCreate}
+              disabled={!newUsername.trim() || isCreating}
               className="bg-primary hover:bg-primary/90 text-white"
             >
-              {createMutation.isPending && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+              {isCreating && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
               Tạo User
             </Button>
           </DialogFooter>
@@ -292,9 +344,9 @@ function UsersTab() {
             <AlertDialogCancel className="border-border">Hủy</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive hover:bg-destructive/90 text-white"
-              onClick={() => deleteUserId && deleteMutation.mutate({ userId: deleteUserId })}
+              onClick={handleDelete}
             >
-              {deleteMutation.isPending && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+              {isDeleting && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
               Xóa
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -308,16 +360,14 @@ function UsersTab() {
           username={imapUser.username}
           open={!!imapUser}
           onClose={() => setImapUser(null)}
-          onSaved={() => {
-            utils.users.getAll.invalidate();
-          }}
+          onSaved={loadUsers}
         />
       )}
     </div>
   );
 }
 
-// ─── User IMAP Modal (Admin configures per-user IMAP) ─────────────────────────
+// ─── User IMAP Modal ──────────────────────────────────────────────────────────
 
 function UserImapModal({
   userId, username, open, onClose, onSaved
@@ -328,49 +378,72 @@ function UserImapModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const utils = trpc.useUtils();
-  const { data: config, isLoading } = trpc.imapConfig.getUserConfig.useQuery({ userId });
-
+  const [config, setConfig] = useState<ImapConfigData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("993");
   const [allowedSenders, setAllowedSenders] = useState("info@account.netflix.com,netflix@netflix.com");
   const [showPassword, setShowPassword] = useState(false);
-  const [initialized, setInitialized] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
 
   useEffect(() => {
-    if (config && !config.isShared && !initialized) {
-      setEmail(config.email || "");
-      setHost(config.host || "");
-      setPort(String(config.port || 993));
-      setAllowedSenders(config.allowedSenders || "info@account.netflix.com,netflix@netflix.com");
-      setInitialized(true);
-    }
-  }, [config, initialized]);
+    if (!open) return;
+    setIsLoading(true);
+    fetch(`/api/imap-config?action=user&userId=${userId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data && !data.error && !data.isShared) {
+          setConfig(data);
+          setEmail(data.email || "");
+          setHost(data.host || "");
+          setPort(String(data.port || 993));
+          setAllowedSenders(data.allowedSenders || "info@account.netflix.com,netflix@netflix.com");
+        } else {
+          setConfig(data?.isShared ? data : null);
+        }
+      })
+      .catch(() => setConfig(null))
+      .finally(() => setIsLoading(false));
+  }, [open, userId]);
 
-  const saveMutation = trpc.imapConfig.saveUserConfig.useMutation({
-    onSuccess: () => {
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSaving(true);
+    try {
+      const res = await fetch("/api/imap-config?action=user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, email, password: password || undefined, host, port: parseInt(port), allowedSenders }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lưu thất bại");
       toast.success(`Đã lưu IMAP cho @${username}`);
-      utils.imapConfig.getUserConfig.invalidate({ userId });
       onSaved();
       onClose();
-    },
-    onError: (err) => toast.error(err.message),
-  });
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
-  const clearMutation = trpc.imapConfig.clearUserConfig.useMutation({
-    onSuccess: () => {
+  const handleClear = async () => {
+    setIsClearing(true);
+    try {
+      const res = await fetch(`/api/imap-config?action=user&userId=${userId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Xóa thất bại");
       toast.success(`Đã xóa IMAP riêng của @${username}, sẽ dùng Shared`);
-      utils.imapConfig.getUserConfig.invalidate({ userId });
+      setConfig(null);
       onSaved();
-    },
-    onError: (err) => toast.error(err.message),
-  });
-
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault();
-    saveMutation.mutate({ userId, email, password: password || undefined, host, port: parseInt(port), allowedSenders });
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsClearing(false);
+    }
   };
 
   return (
@@ -406,10 +479,10 @@ function UserImapModal({
                     variant="ghost"
                     size="sm"
                     className="ml-auto h-6 px-2 text-xs text-destructive hover:bg-destructive/10"
-                    onClick={() => clearMutation.mutate({ userId })}
-                    disabled={clearMutation.isPending}
+                    onClick={handleClear}
+                    disabled={isClearing}
                   >
-                    {clearMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                    {isClearing ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
                   </Button>
                 </>
               ) : (
@@ -465,8 +538,8 @@ function UserImapModal({
               </div>
               <DialogFooter className="pt-2">
                 <Button type="button" variant="outline" onClick={onClose} className="border-border">Hủy</Button>
-                <Button type="submit" disabled={saveMutation.isPending} className="bg-primary hover:bg-primary/90 text-white">
-                  {saveMutation.isPending && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+                <Button type="submit" disabled={isSaving} className="bg-primary hover:bg-primary/90 text-white">
+                  {isSaving && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
                   Lưu cấu hình
                 </Button>
               </DialogFooter>
@@ -481,38 +554,51 @@ function UserImapModal({
 // ─── IMAP Config Tab (Shared) ─────────────────────────────────────────────────
 
 function ImapConfigTab() {
-  const utils = trpc.useUtils();
-  const { data: sharedConfig, isLoading } = trpc.imapConfig.getShared.useQuery();
-
+  const [sharedConfig, setSharedConfig] = useState<ImapConfigData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("993");
   const [allowedSenders, setAllowedSenders] = useState("info@account.netflix.com,netflix@netflix.com");
   const [showPassword, setShowPassword] = useState(false);
-  const [initialized, setInitialized] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
-    if (sharedConfig && !initialized) {
-      setEmail(sharedConfig.email || "");
-      setHost(sharedConfig.host || "");
-      setPort(String(sharedConfig.port || 993));
-      setAllowedSenders(sharedConfig.allowedSenders || "info@account.netflix.com,netflix@netflix.com");
-      setInitialized(true);
-    }
-  }, [sharedConfig, initialized]);
+    fetch("/api/imap-config?action=shared")
+      .then(r => r.json())
+      .then(data => {
+        if (data && !data.error) {
+          setSharedConfig(data);
+          setEmail(data.email || "");
+          setHost(data.host || "");
+          setPort(String(data.port || 993));
+          setAllowedSenders(data.allowedSenders || "info@account.netflix.com,netflix@netflix.com");
+        }
+      })
+      .catch(() => {})
+      .finally(() => setIsLoading(false));
+  }, []);
 
-  const saveMutation = trpc.imapConfig.saveShared.useMutation({
-    onSuccess: () => {
-      toast.success("Đã lưu cấu hình IMAP Shared");
-      utils.imapConfig.getShared.invalidate();
-    },
-    onError: (err) => toast.error(err.message),
-  });
-
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    saveMutation.mutate({ email, password: password || undefined, host, port: parseInt(port), allowedSenders });
+    setIsSaving(true);
+    try {
+      const res = await fetch("/api/imap-config?action=shared", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password: password || undefined, host, port: parseInt(port), allowedSenders }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lưu thất bại");
+      toast.success("Đã lưu cấu hình IMAP Shared");
+      setSharedConfig({ email, host, port: parseInt(port), allowedSenders });
+      setPassword("");
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -612,8 +698,8 @@ function ImapConfigTab() {
                   onChange={(e) => setAllowedSenders(e.target.value)} className="h-9 text-sm bg-input border-border" />
                 <p className="text-xs text-muted-foreground">Danh sách email Netflix được phép, cách nhau bằng dấu phẩy</p>
               </div>
-              <Button type="submit" className="w-full h-9 bg-primary hover:bg-primary/90 text-white" disabled={saveMutation.isPending}>
-                {saveMutation.isPending
+              <Button type="submit" className="w-full h-9 bg-primary hover:bg-primary/90 text-white" disabled={isSaving}>
+                {isSaving
                   ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Đang lưu...</>
                   : <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Lưu cấu hình Shared</>
                 }
