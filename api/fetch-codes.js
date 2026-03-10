@@ -88,7 +88,7 @@ export default async function handler(req, res) {
         imap.openBox('INBOX', true, (err) => {
           if (err) return reject(err);
           
-          // [SỬA 1] Tìm email Netflix trong 5 phút gần nhất (thay vì 7 ngày)
+          // [SỬA 1] Tìm email Netflix trong 5 phút gần nhất
           const since = new Date();
           since.setMinutes(since.getMinutes() - 5);
           
@@ -110,34 +110,64 @@ export default async function handler(req, res) {
                   const htmlContent = parsed.html || '';
                   const textContent = parsed.text || '';
                   
-                  // Tìm mã 4-6 chữ số
+                  // Tìm mã 4-6 chữ số (OTP)
                   const codeMatch = textContent.match(/\b(\d{4,6})\b/) || htmlContent.match(/\b(\d{4,6})\b/);
                   const code = codeMatch ? codeMatch[1] : null;
                   
-                  // [SỬA 2] Tìm link xác thực Netflix từ HTML email
-                  // Bắt các dạng link thực tế:
-                  //   - /account/travel/verify?nftoken=...  (nút "Nhận mã" - xác thực tạm thời)
-                  //   - /account/update-primary-location... (Household)
-                  //   - /account/update-household...        (Household)
+                  // [SỬA 2] Tìm link từ nút đỏ trong email Netflix
+                  // Netflix dùng 2 dạng link chính:
+                  //   - /account/travel/verify?nftoken=...   → email "Mã truy cập tạm thời" (nút "Nhận mã")
+                  //   - /account/login-with-email?nftoken=... → email "Phê duyệt đăng nhập mới" (nút "Phê duyệt")
+                  //   - /account/update-primary-location...  → email Household
                   let accessLink = null;
 
-                  // Lấy tất cả href trong HTML
-                  const allLinks = [...htmlContent.matchAll(/href=["']([^"']+)["']/gi)].map(m => m[1]);
+                  // Lấy toàn bộ href từ HTML, bao gồm cả link bị HTML-encode (&amp;)
+                  const rawHrefs = [...htmlContent.matchAll(/href=["']([^"']+)["']/gi)].map(m =>
+                    m[1].replace(/&amp;/g, '&')
+                  );
 
-                  // Ưu tiên 1: link travel/verify (nút đỏ "Nhận mã")
-                  accessLink = allLinks.find(u => u.includes('netflix.com') && u.includes('/account/travel/verify')) || null;
+                  // Ưu tiên 1: link travel/verify (nút "Nhận mã" - xác thực tạm thời khi đi du lịch)
+                  accessLink = rawHrefs.find(u =>
+                    u.includes('netflix.com') && u.includes('/account/travel/verify')
+                  ) || null;
 
-                  // Ưu tiên 2: link household
+                  // Ưu tiên 2: link /ilum?code= (nút "Phê duyệt đăng nhập mới")
                   if (!accessLink) {
-                    accessLink = allLinks.find(u =>
+                    accessLink = rawHrefs.find(u =>
+                      u.includes('netflix.com') && u.includes('/ilum')
+                    ) || null;
+                  }
+
+                  // Ưu tiên 3: link login-with-email
+                  if (!accessLink) {
+                    accessLink = rawHrefs.find(u =>
+                      u.includes('netflix.com') && u.includes('/account/login-with-email')
+                    ) || null;
+                  }
+
+                  // Ưu tiên 4: bất kỳ link nào có nftoken (token xác thực của Netflix)
+                  if (!accessLink) {
+                    accessLink = rawHrefs.find(u =>
+                      u.includes('netflix.com') && u.includes('nftoken')
+                    ) || null;
+                  }
+
+                  // Ưu tiên 4: link household
+                  if (!accessLink) {
+                    accessLink = rawHrefs.find(u =>
                       u.includes('netflix.com') &&
                       (u.includes('update-primary-location') || u.includes('update-household'))
                     ) || null;
                   }
 
-                  // Ưu tiên 3: bất kỳ link netflix.com/account nào
+                  // Ưu tiên 5: fallback - bất kỳ link netflix.com/account nào không phải link hỗ trợ
                   if (!accessLink) {
-                    accessLink = allLinks.find(u => u.includes('netflix.com/account')) || null;
+                    accessLink = rawHrefs.find(u =>
+                      u.includes('netflix.com/account') &&
+                      !u.includes('help') &&
+                      !u.includes('support') &&
+                      !u.includes('contactus')
+                    ) || null;
                   }
 
                   resolve({
