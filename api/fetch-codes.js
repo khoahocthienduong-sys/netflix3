@@ -114,37 +114,30 @@ export default async function handler(req, res) {
                   const codeMatch = textContent.match(/\b(\d{4,6})\b/) || htmlContent.match(/\b(\d{4,6})\b/);
                   const code = codeMatch ? codeMatch[1] : null;
                   
-                  // [SỬA 2] Tìm link trong nút đỏ "Nhận mã" từ HTML email
-                  // Ưu tiên tìm link trong thẻ <a> chứa nút bấm (button/link có màu đỏ Netflix)
+                  // [SỬA 2] Tìm link xác thực Netflix từ HTML email
+                  // Bắt các dạng link thực tế:
+                  //   - /account/travel/verify?nftoken=...  (nút "Nhận mã" - xác thực tạm thời)
+                  //   - /account/update-primary-location... (Household)
+                  //   - /account/update-household...        (Household)
                   let accessLink = null;
 
-                  // Thử tìm link trong thẻ <a> bao quanh nút có text "Nhận mã" hoặc "Get Code"
-                  const buttonLinkMatch = htmlContent.match(
-                    /<a[^>]+href=["']([^"']+)["'][^>]*>(?:[^<]*<[^>]+>)*[^<]*(Nhận mã|Get Code|Verify|Xác minh)[^<]*(?:<\/[^>]+>)*[^<]*<\/a>/i
-                  );
-                  if (buttonLinkMatch) {
-                    accessLink = buttonLinkMatch[1];
+                  // Lấy tất cả href trong HTML
+                  const allLinks = [...htmlContent.matchAll(/href=["']([^"']+)["']/gi)].map(m => m[1]);
+
+                  // Ưu tiên 1: link travel/verify (nút đỏ "Nhận mã")
+                  accessLink = allLinks.find(u => u.includes('netflix.com') && u.includes('/account/travel/verify')) || null;
+
+                  // Ưu tiên 2: link household
+                  if (!accessLink) {
+                    accessLink = allLinks.find(u =>
+                      u.includes('netflix.com') &&
+                      (u.includes('update-primary-location') || u.includes('update-household'))
+                    ) || null;
                   }
 
-                  // Nếu không tìm được qua text nút, tìm link Netflix dạng /login hoặc /account
+                  // Ưu tiên 3: bất kỳ link netflix.com/account nào
                   if (!accessLink) {
-                    const allLinks = [...htmlContent.matchAll(/<a[^>]+href=["']([^"']+)["'][^>]*>/gi)];
-                    for (const match of allLinks) {
-                      const url = match[1];
-                      if (
-                        url.includes('netflix.com') &&
-                        (url.includes('/login') || url.includes('/account') || url.includes('nflxso') || url.includes('t.netflix'))
-                      ) {
-                        accessLink = url;
-                        break;
-                      }
-                    }
-                  }
-
-                  // Fallback: tìm link household như cũ
-                  if (!accessLink) {
-                    const linkMatch = htmlContent.match(/https:\/\/www\.netflix\.com\/account\/update-primary-location[^\s"']*/);
-                    accessLink = linkMatch ? linkMatch[0] : null;
+                    accessLink = allLinks.find(u => u.includes('netflix.com/account')) || null;
                   }
 
                   resolve({
