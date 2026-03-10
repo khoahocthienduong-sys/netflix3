@@ -39,23 +39,14 @@ function extractNetflixLinks(html, text) {
   return [];
 }
 
-// ─── Kiểm tra link có phải loại cần thiết không ──────────────────────────────
-function isExcluded(u) {
+// ─── Kiểm tra link có phải loại cần thiết không (whitelist approach) ──────────
+// Chỉ GIỮ LẠI các link hành động thực sự, loại bỏ tất cả link còn lại
+function isActionLink(u) {
   return (
-    u.includes('lkid=URL_LOGO') ||
-    u.includes('lkid=URL_EMAIL') ||
-    u.includes('lkid=URL_SRC') ||
-    u.includes('ManageAccountAccess') ||
-    u.includes('/password?') ||
-    u.includes('notificationsettings') ||
-    u.includes('TermsOfUse') ||
-    u.includes('PrivacyPolicy') ||
-    u.includes('/browse?') ||
-    u.includes('help.netflix') ||
-    u.includes('denysignin') ||
-    u.includes('unsubscribe') ||
-    u.includes('accountaccess') ||
-    u.includes('lnktrk=EVO') && !u.includes('travel/verify') && !u.includes('/ilum') && !u.includes('update-primary-location') && !u.includes('update-household')
+    u.includes('/account/travel/verify') ||
+    u.includes('/ilum') ||
+    u.includes('update-primary-location') ||
+    u.includes('update-household')
   );
 }
 
@@ -70,7 +61,7 @@ function parseEmail(parsed) {
   const textContent = parsed.text || '';
 
   const allLinks = extractNetflixLinks(htmlContent, textContent);
-  const validLinks = allLinks.filter(u => !isExcluded(u));
+  const validLinks = allLinks.filter(u => isActionLink(u));
 
   // Ưu tiên link
   const travelLink = validLinks.find(l => l.includes('/account/travel/verify')) || null;
