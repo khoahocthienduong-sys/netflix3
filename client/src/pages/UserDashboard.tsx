@@ -27,6 +27,20 @@ function isHouseholdLink(url: string): boolean {
   return url.includes("update-primary-location") || url.includes("update-household");
 }
 
+function getLinkLabel(url: string): string {
+  if (url.includes("/account/travel/verify")) return "Link truy cập tạm thời";
+  if (url.includes("/ilum")) return "Link phê duyệt đăng nhập";
+  if (isHouseholdLink(url)) return "Link cập nhật Household";
+  return "Link truy cập Netflix";
+}
+
+function getLinkTitle(url: string): string {
+  if (url.includes("/account/travel/verify")) return "Nhấn để truy cập tạm thời";
+  if (url.includes("/ilum")) return "Nhấn để phê duyệt đăng nhập";
+  if (isHouseholdLink(url)) return "Nhấn để cập nhật Household";
+  return "Nhấn để mở link Netflix";
+}
+
 export default function UserDashboard() {
   const [, navigate] = useLocation();
   const session = getSession();
@@ -204,9 +218,7 @@ export default function UserDashboard() {
                       {result.code ? (
                         <><Key className="w-4 h-4 text-primary" />Mã xác minh tìm thấy</>
                       ) : result.householdLink ? (
-                        <><Home className="w-4 h-4 text-blue-500" />
-                          {isHouseholdLink(result.householdLink) ? "Link Household" : "Link truy cập tạm thời"}
-                        </>
+                        <><Home className="w-4 h-4 text-blue-500" />{getLinkLabel(result.householdLink)}</>
                       ) : (
                         "Kết quả email"
                       )}
@@ -249,7 +261,7 @@ export default function UserDashboard() {
                 {result.householdLink && (
                   <div className="space-y-2">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      {isHouseholdLink(result.householdLink) ? "Link cập nhật Household" : "Link truy cập tạm thời"}
+                      {getLinkLabel(result.householdLink)}
                     </p>
                     <a
                       href={result.householdLink}
@@ -259,9 +271,7 @@ export default function UserDashboard() {
                     >
                       <div className="flex flex-col overflow-hidden min-w-0">
                         <span className="text-primary font-medium group-hover:text-primary/80 transition-colors text-sm">
-                          {isHouseholdLink(result.householdLink)
-                            ? "Nhấn để cập nhật Household"
-                            : "Nhấn để truy cập tạm thời"}
+                          {getLinkTitle(result.householdLink)}
                         </span>
                         <span className="text-xs text-muted-foreground truncate mt-0.5">
                           {result.householdLink}
