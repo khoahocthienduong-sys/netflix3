@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { getSession, clearSession } from "./LoginPage";
 import { Button } from "@/components/ui/button";
 import {
-  Tv2, LogOut, RefreshCw, Loader2, Key, Home, ExternalLink,
+  Tv2, LogOut, RefreshCw, Loader2, Key, ExternalLink,
   Copy, CheckCircle2, Clock, AlertCircle, Shield, Wifi, WifiOff
 } from "lucide-react";
 
@@ -23,22 +23,11 @@ interface ImapConfigData {
   isShared?: boolean;
 }
 
-function isHouseholdLink(url: string): boolean {
-  return url.includes("update-primary-location") || url.includes("update-household");
-}
-
 function getLinkLabel(url: string): string {
-  if (url.includes("/account/travel/verify")) return "Link truy cập tạm thời";
-  if (url.includes("/ilum")) return "Link phê duyệt đăng nhập";
-  if (isHouseholdLink(url)) return "Link cập nhật Household";
-  return "Link truy cập Netflix";
-}
-
-function getLinkTitle(url: string): string {
-  if (url.includes("/account/travel/verify")) return "Nhấn để truy cập tạm thời";
-  if (url.includes("/ilum")) return "Nhấn để phê duyệt đăng nhập";
-  if (isHouseholdLink(url)) return "Nhấn để cập nhật Household";
-  return "Nhấn để mở link Netflix";
+  if (url.includes("/account/travel/verify")) return "Nhận mã truy cập tạm thời";
+  if (url.includes("/ilum")) return "Phê duyệt đăng nhập";
+  if (url.includes("update-primary-location") || url.includes("update-household")) return "Cập nhật Household";
+  return "Truy cập Netflix";
 }
 
 export default function UserDashboard() {
@@ -52,7 +41,6 @@ export default function UserDashboard() {
 
   useEffect(() => {
     if (!session) { navigate("/login"); return; }
-    // Lấy IMAP config của user
     fetch(`/api/imap-config?action=user&userId=${session.id}`)
       .then(r => r.json())
       .then(data => { if (data && !data.error) setImapConfig(data); })
@@ -70,7 +58,7 @@ export default function UserDashboard() {
     try {
       const res = await fetch(`/api/fetch-codes?userId=${session.id}`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Không thể lấy mã Netflix");
+      if (!res.ok) throw new Error(data.message || data.error || "Không thể lấy mã Netflix");
       setResult(data as FetchResult);
       if (data.code) toast.success("Đã tìm thấy mã xác minh Netflix!");
       else if (data.householdLink) toast.success("Đã tìm thấy link Netflix!");
@@ -93,6 +81,10 @@ export default function UserDashboard() {
       toast.error("Không thể sao chép");
     }
   };
+
+  // Xác định loại kết quả: chỉ 1 trong 2
+  const hasCode = result && result.code && !result.householdLink;
+  const hasLink = result && result.householdLink && !result.code;
 
   return (
     <div className="min-h-screen bg-background">
@@ -146,11 +138,9 @@ export default function UserDashboard() {
             {hasImapConfig ? (
               <>
                 <Wifi className="w-4 h-4 text-green-600 shrink-0" />
-                <div>
-                  <p className="font-medium text-green-800">
-                    {imapConfig.isShared ? "Dùng IMAP Shared" : "IMAP riêng đã cấu hình"}
-                  </p>
-                </div>
+                <p className="font-medium text-green-800">
+                  {imapConfig.isShared ? "Dùng IMAP Shared" : "IMAP riêng đã cấu hình"}
+                </p>
               </>
             ) : (
               <>
@@ -195,7 +185,7 @@ export default function UserDashboard() {
 
           {/* Error state */}
           {fetchError && !isFetching && (
-            <div className="bg-red-50 border border-red-200 rounded-xl p-4 animate-fade-in-up">
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
               <div className="flex items-start gap-3">
                 <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
                 <div>
@@ -206,26 +196,20 @@ export default function UserDashboard() {
             </div>
           )}
 
-          {/* Result */}
-          {result && !isFetching && (
-            <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm animate-fade-in-up">
+          {/* ── Kết quả: MÃ OTP ── */}
+          {hasCode && !isFetching && (
+            <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
               <div className="h-1 bg-primary" />
               <div className="p-5 space-y-4">
-                {/* Header */}
                 <div className="flex items-start justify-between">
                   <div>
                     <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                      {result.code ? (
-                        <><Key className="w-4 h-4 text-primary" />Mã xác minh tìm thấy</>
-                      ) : result.householdLink ? (
-                        <><Home className="w-4 h-4 text-blue-500" />{getLinkLabel(result.householdLink)}</>
-                      ) : (
-                        "Kết quả email"
-                      )}
+                      <Key className="w-4 h-4 text-primary" />
+                      Mã xác minh tìm thấy
                     </h3>
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
                       <Clock className="w-3 h-3" />
-                      <span>{new Date(result.timestamp).toLocaleString("vi-VN")}</span>
+                      <span>{new Date(result!.timestamp).toLocaleString("vi-VN")}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-50 border border-green-200">
@@ -234,59 +218,78 @@ export default function UserDashboard() {
                   </div>
                 </div>
 
-                {/* Verification code */}
-                {result.code && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Mã xác minh</p>
-                    <div className="flex items-center gap-3 bg-muted/50 border border-border p-4 rounded-xl">
-                      <span className="code-display text-4xl font-bold tracking-[0.25em] text-foreground flex-1 select-all">
-                        {result.code}
-                      </span>
-                      <button
-                        onClick={() => result.code && copyToClipboard(result.code)}
-                        className="p-2.5 hover:bg-accent rounded-lg transition-all text-muted-foreground hover:text-foreground border border-transparent hover:border-border"
-                        title="Sao chép mã"
-                      >
-                        {copied ? (
-                          <CheckCircle2 className="w-5 h-5 text-green-500" />
-                        ) : (
-                          <Copy className="w-5 h-5" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Household / access link */}
-                {result.householdLink && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      {getLinkLabel(result.householdLink)}
-                    </p>
-                    <a
-                      href={result.householdLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-between w-full p-4 bg-muted/30 hover:bg-accent/50 border border-border hover:border-primary/30 rounded-xl group transition-all"
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Mã xác minh</p>
+                  <div className="flex items-center gap-3 bg-muted/50 border border-border p-4 rounded-xl">
+                    <span className="text-4xl font-bold tracking-[0.25em] text-foreground flex-1 select-all font-mono">
+                      {result!.code}
+                    </span>
+                    <button
+                      onClick={() => copyToClipboard(result!.code!)}
+                      className="p-2.5 hover:bg-accent rounded-lg transition-all text-muted-foreground hover:text-foreground border border-transparent hover:border-border"
+                      title="Sao chép mã"
                     >
-                      <div className="flex flex-col overflow-hidden min-w-0">
-                        <span className="text-primary font-medium group-hover:text-primary/80 transition-colors text-sm">
-                          {getLinkTitle(result.householdLink)}
-                        </span>
-                        <span className="text-xs text-muted-foreground truncate mt-0.5">
-                          {result.householdLink}
-                        </span>
-                      </div>
-                      <ExternalLink className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0 ml-3 w-4 h-4" />
-                    </a>
+                      {copied ? (
+                        <CheckCircle2 className="w-5 h-5 text-green-500" />
+                      ) : (
+                        <Copy className="w-5 h-5" />
+                      )}
+                    </button>
                   </div>
-                )}
+                </div>
 
-                {/* Email subject */}
-                {result.emailSubject && (
+                {result!.emailSubject && (
                   <div className="pt-3 border-t border-border">
                     <p className="text-xs text-muted-foreground/60 text-center">
-                      Tiêu đề: "{result.emailSubject}"
+                      Tiêu đề: "{result!.emailSubject}"
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Kết quả: NÚT ĐỎ LINK ── */}
+          {hasLink && !isFetching && (
+            <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
+              <div className="h-1 bg-primary" />
+              <div className="p-5 space-y-4">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                      <ExternalLink className="w-4 h-4 text-primary" />
+                      {getLinkLabel(result!.householdLink!)}
+                    </h3>
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
+                      <Clock className="w-3 h-3" />
+                      <span>{new Date(result!.timestamp).toLocaleString("vi-VN")}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-50 border border-green-200">
+                    <CheckCircle2 className="w-3 h-3 text-green-600" />
+                    <span className="text-xs text-green-700 font-medium">Thành công</span>
+                  </div>
+                </div>
+
+                {/* Nút đỏ giống email Netflix */}
+                <a
+                  href={result!.householdLink!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-2 w-full py-3.5 px-6 bg-[#E50914] hover:bg-[#b8070f] active:bg-[#8b0510] text-white font-bold text-base rounded-lg transition-colors shadow-md shadow-red-500/30"
+                >
+                  {getLinkLabel(result!.householdLink!)}
+                  <ExternalLink className="w-4 h-4" />
+                </a>
+
+                <p className="text-xs text-muted-foreground text-center">
+                  * Liên kết sẽ hết hạn sau 15 phút
+                </p>
+
+                {result!.emailSubject && (
+                  <div className="pt-2 border-t border-border">
+                    <p className="text-xs text-muted-foreground/60 text-center">
+                      Tiêu đề: "{result!.emailSubject}"
                     </p>
                   </div>
                 )}
