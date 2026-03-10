@@ -23,8 +23,7 @@ function decrypt(text) {
   }
 }
 
-// ─── Extract link Netflix từ HTML (đã decode quoted-printable bởi mailparser) ─
-// mailparser giữ nguyên &amp; trong href → cần replace về &
+// ─── Extract link Netflix từ HTML ─────────────────────────────────────────────
 function extractNetflixLinks(html, text) {
   if (html) {
     const hrefs = [...html.matchAll(/href=["']([^"']+)["']/gi)]
@@ -39,8 +38,7 @@ function extractNetflixLinks(html, text) {
   return [];
 }
 
-// ─── Kiểm tra link có phải loại cần thiết không (whitelist approach) ──────────
-// Chỉ GIỮ LẠI các link hành động thực sự, loại bỏ tất cả link còn lại
+// ─── Chỉ giữ lại link hành động thực sự (whitelist) ──────────────────────────
 function isActionLink(u) {
   return (
     u.includes('/account/travel/verify') ||
@@ -50,9 +48,7 @@ function isActionLink(u) {
   );
 }
 
-// ─── Parse một email, trả về { type, value, timestamp, subject } hoặc null ───
-// type: 'link' | 'code'
-// Ưu tiên: link travel/verify > link ilum > link household > mã OTP
+// ─── Parse email → { type, value, timestamp, subject } hoặc null ─────────────
 function parseEmail(parsed) {
   const emailDate = parsed.date;
   if (!emailDate) return null;
@@ -60,12 +56,12 @@ function parseEmail(parsed) {
   const htmlContent = parsed.html || '';
   const textContent = parsed.text || '';
 
+  // Tìm link hành động
   const allLinks = extractNetflixLinks(htmlContent, textContent);
   const validLinks = allLinks.filter(u => isActionLink(u));
 
-  // Ưu tiên link
-  const travelLink = validLinks.find(l => l.includes('/account/travel/verify')) || null;
-  const ilumLink   = validLinks.find(l => l.includes('/ilum')) || null;
+  const travelLink    = validLinks.find(l => l.includes('/account/travel/verify')) || null;
+  const ilumLink      = validLinks.find(l => l.includes('/ilum')) || null;
   const householdLink = validLinks.find(l =>
     l.includes('update-primary-location') || l.includes('update-household')
   ) || null;
@@ -73,26 +69,49 @@ function parseEmail(parsed) {
   const finalLink = travelLink || ilumLink || householdLink || null;
 
   if (finalLink) {
-    return {
-      type: 'link',
-      value: finalLink,
-      timestamp: emailDate,
-      subject: parsed.subject || 'Netflix Email',
-    };
+    return { type: 'link', value: finalLink, timestamp: emailDate, subject: parsed.subject || 'Netflix Email' };
   }
 
   // Fallback: mã OTP 4-6 chữ số
   const codeMatch = textContent.match(/\b(\d{4,6})\b/);
   if (codeMatch) {
-    return {
-      type: 'code',
-      value: codeMatch[1],
-      timestamp: emailDate,
-      subject: parsed.subject || 'Netflix Email',
-    };
+    return { type: 'code', value: codeMatch[1], timestamp: emailDate, subject: parsed.subject || 'Netflix Email' };
   }
 
   return null;
+}
+
+// ─── Tìm email trong INBOX với fallback 3 bước ───────────────────────────────
+function searchEmails(imap, since) {
+  return new Promise((resolve, reject) => {
+    // Bước 1: OR (FROM netflix) (SUBJECT netflix) — bắt cả email gốc lẫn forward
+    // Cú pháp imap library: ['OR', ['FROM','netflix'], ['SUBJECT','netflix']]
+    // Nhưng SINCE phải là điều kiện riêng, kết hợp bằng AND ngầm định
+    imap.search([['OR', ['FROM', 'netflix'], ['SUBJECT', 'netflix']], ['SINCE', since]], (err, results) => {
+      if (!err && results && results.length > 0) {
+        return resolve(results);
+      }
+      // Bước 2: chỉ FROM netflix
+      imap.search([['FROM', 'netflix'], ['SINCE', since]], (err2, results2) => {
+        if (!err2 && results2 && results2.length > 0) {
+          return resolve(results2);
+        }
+        // Bước 3: chỉ SUBJECT netflix (bắt email forward)
+        imap.search([['SUBJECT', 'netflix'], ['SINCE', since]], (err3, results3) => {
+          if (!err3 && results3 && results3.length > 0) {
+            return resolve(results3);
+          }
+          // Bước 4: lấy tất cả email 7 ngày gần nhất, tự lọc
+          imap.search([['SINCE', since]], (err4, results4) => {
+            if (err4 || !results4 || results4.length === 0) {
+              return reject(new Error('Không tìm thấy email nào trong 7 ngày gần nhất.'));
+            }
+            resolve(results4);
+          });
+        });
+      });
+    });
+  });
 }
 
 export default async function handler(req, res) {
@@ -110,11 +129,12 @@ export default async function handler(req, res) {
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
+  // Tổng timeout 55s (Vercel function limit 60s)
   const requestTimeout = setTimeout(() => {
     if (!res.headersSent) {
       res.status(504).json({ message: 'Request timeout: Email fetch took too long' });
     }
-  }, 30000);
+  }, 55000);
 
   try {
     // ── Lấy user ────────────────────────────────────────────────────────────
@@ -158,8 +178,8 @@ export default async function handler(req, res) {
       port: imapPort || 993,
       tls: true,
       tlsOptions: { rejectUnauthorized: false },
-      connTimeout: 10000,
-      authTimeout: 10000,
+      connTimeout: 15000,
+      authTimeout: 15000,
     });
 
     const result = await new Promise((resolve, reject) => {
@@ -172,116 +192,73 @@ export default async function handler(req, res) {
         fn(val);
       };
 
+      // IMAP timeout 50s
       const imapTimeout = setTimeout(() => {
-        settle(reject, new Error('IMAP operation timeout'));
-      }, 20000);
+        settle(reject, new Error('IMAP operation timeout — kết nối email quá chậm, vui lòng thử lại.'));
+      }, 50000);
 
-      imap.once('ready', () => {
-        imap.openBox('INBOX', true, (err) => {
-          if (err) return settle(reject, err);
+      imap.once('ready', async () => {
+        try {
+          await new Promise((res2, rej2) => imap.openBox('INBOX', true, (e) => e ? rej2(e) : res2()));
 
           const since = new Date();
           since.setDate(since.getDate() - 7);
 
-          // Tìm cả email gốc từ Netflix và email được forward lại
-          // Dùng OR: (FROM netflix) HOẶC (SUBJECT netflix)
-          const searchCriteria = [
-            'OR',
-            ['FROM', 'netflix'],
-            ['SUBJECT', 'netflix'],
-            ['SINCE', since]
-          ];
+          // Tìm email: bắt cả email gốc từ Netflix lẫn email forward
+          const results = await searchEmails(imap, since);
 
-          imap.search(searchCriteria, (err, results) => {
-            if (err) {
-              // Fallback: nếu server không hỗ trợ OR, thử tìm theo FROM
-              imap.search([['FROM', 'netflix'], ['SINCE', since]], (err2, results2) => {
-                if (err2 || !results2 || results2.length === 0) {
-                  // Fallback cuối: lấy 20 email mới nhất bất kể
-                  imap.search([['SINCE', since]], (err3, results3) => {
-                    if (err3 || !results3 || results3.length === 0) {
-                      return settle(reject, new Error('Không tìm thấy email Netflix nào trong 7 ngày gần nhất.'));
-                    }
-                    processFetch(results3);
-                  });
-                } else {
-                  processFetch(results2);
+          // Lấy 15 email gần nhất để tăng khả năng tìm thấy
+          const toFetch = results.slice(-15);
+          const parsed_emails = [];
+          let processedCount = 0;
+
+          const f = imap.fetch(toFetch, { bodies: '' });
+
+          f.on('message', (msg) => {
+            msg.on('body', (stream) => {
+              simpleParser(stream, (err, parsed) => {
+                processedCount++;
+                if (!err && parsed) {
+                  const r = parseEmail(parsed);
+                  if (r) parsed_emails.push(r);
+                }
+
+                if (processedCount >= toFetch.length) {
+                  if (parsed_emails.length === 0) {
+                    return settle(reject, new Error('Không tìm thấy email Netflix nào có link hoặc mã hợp lệ trong 7 ngày gần nhất.'));
+                  }
+
+                  // Lọc email trong 30 phút gần nhất
+                  const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+                  const recent = parsed_emails.filter(e => new Date(e.timestamp) >= thirtyMinutesAgo);
+
+                  if (recent.length === 0) {
+                    return settle(reject, new Error('Không tìm thấy email Netflix trong 30 phút gần nhất. Vui lòng yêu cầu Netflix gửi lại email và thử lại.'));
+                  }
+
+                  // Lấy email mới nhất
+                  recent.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                  const best = recent[0];
+
+                  if (best.type === 'link') {
+                    settle(resolve, { code: null, householdLink: best.value, timestamp: best.timestamp, emailSubject: best.subject });
+                  } else {
+                    settle(resolve, { code: best.value, householdLink: null, timestamp: best.timestamp, emailSubject: best.subject });
+                  }
                 }
               });
-              return;
-            }
-            if (!results || results.length === 0) {
-              return settle(reject, new Error('Không tìm thấy email Netflix nào trong 7 ngày gần nhất.'));
-            }
-            processFetch(results);
+            });
           });
 
-          function processFetch(results) {
+          f.once('error', (err) => settle(reject, err));
+          f.once('end', () => {});
 
-            // Lấy 10 email gần nhất
-            const toFetch = results.slice(-10);
-            const parsed_emails = [];
-            let processedCount = 0;
-
-            const f = imap.fetch(toFetch, { bodies: '' });
-
-            f.on('message', (msg) => {
-              msg.on('body', (stream) => {
-                simpleParser(stream, (err, parsed) => {
-                  processedCount++;
-
-                  if (!err && parsed) {
-                    const result = parseEmail(parsed);
-                    if (result) parsed_emails.push(result);
-                  }
-
-                  if (processedCount >= toFetch.length) {
-                    if (parsed_emails.length === 0) {
-                      return settle(reject, new Error('Không tìm thấy email Netflix nào trong 7 ngày gần nhất có link hoặc mã hợp lệ.'));
-                    }
-
-                    // Lọc email trong 30 phút gần nhất (link Netflix hết hạn sau 15 phút)
-                    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-                    const recent = parsed_emails.filter(e => new Date(e.timestamp) >= thirtyMinutesAgo);
-
-                    if (recent.length === 0) {
-                      return settle(reject, new Error('Không tìm thấy email Netflix trong 30 phút gần nhất. Vui lòng yêu cầu Netflix gửi lại email và thử lại.'));
-                    }
-
-                    // Sắp xếp theo thời gian mới nhất trước
-                    recent.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-                    // Lấy email mới nhất — chỉ trả 1 loại (link HOẶC mã)
-                    const best = recent[0];
-
-                    if (best.type === 'link') {
-                      settle(resolve, {
-                        code: null,
-                        householdLink: best.value,
-                        timestamp: best.timestamp,
-                        emailSubject: best.subject,
-                      });
-                    } else {
-                      settle(resolve, {
-                        code: best.value,
-                        householdLink: null,
-                        timestamp: best.timestamp,
-                        emailSubject: best.subject,
-                      });
-                    }
-                  }
-                });
-              });
-            });
-
-            f.once('error', (err) => settle(reject, err));
-            f.once('end', () => {});
-          } // end processFetch
-        });
+        } catch (e) {
+          settle(reject, e);
+        }
       });
 
       imap.once('error', (err) => settle(reject, err));
-
       try { imap.connect(); } catch (e) { settle(reject, e); }
     });
 
