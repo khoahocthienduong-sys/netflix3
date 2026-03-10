@@ -160,10 +160,14 @@ export default async function handler(req, res) {
                     ) || null;
                   }
 
-                  // Ưu tiên 5: fallback - bất kỳ link netflix.com/account nào không phải link hỗ trợ
+                  // Ưu tiên 5: fallback - bất kỳ link netflix.com/account nào không phải link phụ
+                  // Loại trừ: accountaccess (link footer), lkid (tracking link), help, support
                   if (!accessLink) {
                     accessLink = rawHrefs.find(u =>
                       u.includes('netflix.com/account') &&
+                      !u.includes('accountaccess') &&
+                      !u.includes('lkid') &&
+                      !u.includes('lnktrk') &&
                       !u.includes('help') &&
                       !u.includes('support') &&
                       !u.includes('contactus')
