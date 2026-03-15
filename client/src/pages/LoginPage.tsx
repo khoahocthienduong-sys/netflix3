@@ -65,9 +65,9 @@ export default function LoginPage() {
       saveSession(user as NetFetchUser);
       
       if (user.isAdmin) {
-        navigate("/admin");
+        navigate("/admin", { replace: true });
       } else {
-        navigate("/dashboard");
+        navigate("/dashboard", { replace: true });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Đăng nhập thất bại. Vui lòng thử lại.";
