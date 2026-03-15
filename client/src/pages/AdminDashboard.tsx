@@ -129,6 +129,7 @@ function UsersTab() {
   const [deleteUserId, setDeleteUserId] = useState<string | null>(null);
   const [newUsername, setNewUsername] = useState("");
   const [imapUser, setImapUser] = useState<{ id: string; username: string } | null>(null);
+  const [imapModalOpen, setImapModalOpen] = useState(false);
   const [users, setUsers] = useState<UserItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -272,7 +273,7 @@ function UsersTab() {
                       variant="outline"
                       size="sm"
                       className="h-7 text-xs px-2.5 border-border"
-                      onClick={() => setImapUser({ id: user.id, username: user.username })}
+                      onClick={() => { setImapUser({ id: user.id, username: user.username }); setImapModalOpen(true); }}
                     >
                       <Settings className="w-3 h-3 mr-1" />
                       IMAP
@@ -357,8 +358,8 @@ function UsersTab() {
         <UserImapModal
           userId={imapUser.id}
           username={imapUser.username}
-          open={!!imapUser}
-          onClose={() => setImapUser(null)}
+          open={imapModalOpen}
+          onClose={() => setImapModalOpen(false)}
           onSaved={loadUsers}
         />
       )}
