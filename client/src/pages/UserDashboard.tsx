@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { getSession, clearSession } from "./LoginPage";
@@ -38,13 +38,24 @@ export default function UserDashboard() {
   const [imapConfig, setImapConfig] = useState<ImapConfigData | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Dùng ref để tránh setState sau khi component đã unmount
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
-    if (!session) { navigate("/login"); return; }
+    isMountedRef.current = true;
+    if (!session) {
+      navigate("/login", { replace: true });
+      return;
+    }
     fetch(`/api/imap-config?action=user&userId=${session.id}`)
       .then(r => r.json())
-      .then(data => { if (data && !data.error) setImapConfig(data); })
+      .then(data => {
+        if (isMountedRef.current && data && !data.error) setImapConfig(data);
+      })
       .catch(() => {});
+    return () => {
+      isMountedRef.current = false;
+    };
   }, []);
 
   if (!session) return null;
@@ -59,15 +70,19 @@ export default function UserDashboard() {
       const res = await fetch(`/api/fetch-codes?userId=${session.id}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || data.error || "Không thể lấy mã Netflix");
-      setResult(data as FetchResult);
-      if (data.code) toast.success("Đã tìm thấy mã xác minh Netflix!");
-      else if (data.householdLink) toast.success("Đã tìm thấy link Netflix!");
+      if (isMountedRef.current) {
+        setResult(data as FetchResult);
+        if (data.code) toast.success("Đã tìm thấy mã xác minh Netflix!");
+        else if (data.householdLink) toast.success("Đã tìm thấy link Netflix!");
+      }
     } catch (err: any) {
       const msg = err.message || "Không thể lấy mã Netflix";
-      setFetchError(msg);
-      toast.error(msg);
+      if (isMountedRef.current) {
+        setFetchError(msg);
+        toast.error(msg);
+      }
     } finally {
-      setIsFetching(false);
+      if (isMountedRef.current) setIsFetching(false);
     }
   };
 
@@ -76,7 +91,9 @@ export default function UserDashboard() {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       toast.success("Đã sao chép!");
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => {
+        if (isMountedRef.current) setCopied(false);
+      }, 2000);
     } catch {
       toast.error("Không thể sao chép");
     }
@@ -109,7 +126,7 @@ export default function UserDashboard() {
               variant="ghost"
               size="sm"
               className="h-8 text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => { clearSession(); navigate("/login"); }}
+              onClick={() => { clearSession(); navigate("/login", { replace: true }); }}
             >
               <LogOut className="w-3.5 h-3.5 mr-1.5" />
               Đăng xuất
