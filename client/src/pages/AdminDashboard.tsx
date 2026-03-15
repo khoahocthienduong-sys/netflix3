@@ -39,7 +39,7 @@ export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<Tab>("users");
 
   useEffect(() => {
-    if (!session || !session.isAdmin) navigate("/login");
+    if (!session || !session.isAdmin) navigate("/login", { replace: true });
   }, []);
 
   if (!session?.isAdmin) return null;
@@ -90,7 +90,7 @@ export default function AdminDashboard() {
           </button>
           {/* Nút Đăng xuất ngay dưới các nút điều hướng */}
           <button
-            onClick={() => { clearSession(); navigate("/login"); }}
+            onClick={() => { clearSession(); navigate("/login", { replace: true }); }}
             className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-muted-foreground hover:bg-accent hover:text-foreground mt-1"
           >
             <LogOut className="w-4 h-4" />
