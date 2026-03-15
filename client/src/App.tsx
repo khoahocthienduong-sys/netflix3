@@ -1,24 +1,34 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch, Redirect } from "wouter";
+import { Route, Switch, useLocation } from "wouter";
+import { useEffect } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import LoginPage, { getSession } from "./pages/LoginPage";
 import AdminDashboard from "./pages/AdminDashboard";
 import UserDashboard from "./pages/UserDashboard";
 
+// Dùng useEffect thay vì Redirect để tránh race condition với React 19 concurrent mode trên mobile
+function HomeRedirect() {
+  const [, navigate] = useLocation();
+  useEffect(() => {
+    const session = getSession();
+    if (!session) {
+      navigate("/login", { replace: true });
+    } else if (session.isAdmin) {
+      navigate("/admin", { replace: true });
+    } else {
+      navigate("/dashboard", { replace: true });
+    }
+  }, []);
+  return null;
+}
+
 function Router() {
   return (
     <Switch>
-      <Route path="/">
-        {() => {
-          const session = getSession();
-          if (!session) return <Redirect to="/login" />;
-          if (session.isAdmin) return <Redirect to="/admin" />;
-          return <Redirect to="/dashboard" />;
-        }}
-      </Route>
+      <Route path="/" component={HomeRedirect} />
       <Route path="/login" component={LoginPage} />
       <Route path="/admin" component={AdminDashboard} />
       <Route path="/dashboard" component={UserDashboard} />
