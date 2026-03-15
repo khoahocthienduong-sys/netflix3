@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 
@@ -39,6 +39,14 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Nếu đã đăng nhập thì redirect ngay, không render form login
+  useEffect(() => {
+    const session = getSession();
+    if (session) {
+      navigate(session.isAdmin ? "/admin" : "/dashboard", { replace: true });
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
