@@ -9,28 +9,50 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
+  retryCount: number;
 }
 
 class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, retryCount: 0 };
   }
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return { hasError: true, error };
   }
 
   componentDidCatch(error: Error) {
-    // Tự động recover với lỗi removeChild (thường do race condition trên mobile)
-    if (
-      error.name === "NotFoundError" &&
-      error.message &&
-      error.message.toLowerCase().includes("removechild")
-    ) {
-      // Reset state để thử render lại thay vì hiện màn hình lỗi
-      this.setState({ hasError: false, error: null });
+    const msg = (error.message || "").toLowerCase();
+    const name = error.name || "";
+
+    // Bắt TẤT CẢ lỗi DOM manipulation phổ biến trên mobile (insertBefore, removeChild, NotFoundError)
+    const isMobileDomError =
+      name === "NotFoundError" ||
+      msg.includes("insertbefore") ||
+      msg.includes("removechild") ||
+      msg.includes("failed to execute") && msg.includes("node") ||
+      msg.includes("nút mà nút mới cần được chèn vào trước");
+
+    if (isMobileDomError) {
+      console.warn("[ErrorBoundary] ✅ Tự động khôi phục lỗi DOM mobile:", error.message);
+
+      // Tự động thử lại tối đa 2 lần, sau đó mới hiện màn hình lỗi
+      if (this.state.retryCount < 2) {
+        this.setState({
+          hasError: false,
+          error: null,
+          retryCount: this.state.retryCount + 1,
+        });
+      } else {
+        // Vượt quá số lần retry → hiện màn hình lỗi thật
+        console.error("[ErrorBoundary] Vượt quá retry limit, hiện màn hình lỗi");
+      }
+      return;
     }
+
+    // Các lỗi khác thì hiện màn hình lỗi bình thường
+    console.error("[ErrorBoundary] Lỗi không phải DOM mobile:", error);
   }
 
   render() {
