@@ -22,13 +22,15 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error) {
-    // Tự động recover với lỗi removeChild (thường do race condition trên mobile)
+    // Tự động recover với lỗi DOM manipulation (removeChild / insertBefore)
+    // Thường do race condition trên mobile với React 19 concurrent mode, portals, animations
+    const msg = (error.message || "").toLowerCase();
     if (
       error.name === "NotFoundError" &&
-      error.message &&
-      error.message.toLowerCase().includes("removechild")
+      (msg.includes("removechild") || msg.includes("insertbefore") || msg.includes("insert before"))
     ) {
-      // Reset state để thử render lại thay vì hiện màn hình lỗi
+      // Reset state để thử render lại thay vì hiện màn hình lỗi (tự động recover)
+      console.warn("[ErrorBoundary] Auto-recovered DOM error:", error.message);
       this.setState({ hasError: false, error: null });
     }
   }
