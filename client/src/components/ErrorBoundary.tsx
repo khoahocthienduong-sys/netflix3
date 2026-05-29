@@ -22,13 +22,15 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error) {
-    // Tự động recover với lỗi removeChild (thường do race condition trên mobile)
+    const msg = (error.message || "").toLowerCase();
+
     if (
-      error.name === "NotFoundError" &&
-      error.message &&
-      error.message.toLowerCase().includes("removechild")
+      error.name === "NotFoundError" ||
+      msg.includes("insertbefore") ||
+      msg.includes("removechild") ||
+      msg.includes("nút mà nút mới cần được chèn vào trước")
     ) {
-      // Reset state để thử render lại thay vì hiện màn hình lỗi
+      console.warn("[ErrorBoundary] Auto recover mobile DOM error:", error.message);
       this.setState({ hasError: false, error: null });
     }
   }
@@ -38,35 +40,25 @@ class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="flex items-center justify-center min-h-screen p-8 bg-background">
           <div className="flex flex-col items-center w-full max-w-2xl p-8">
-            <AlertTriangle
-              size={48}
-              className="text-destructive mb-6 flex-shrink-0"
-            />
-
+            <AlertTriangle size={48} className="text-destructive mb-6" />
             <h2 className="text-xl mb-4">Đã xảy ra lỗi không mong muốn.</h2>
-
             <div className="p-4 w-full rounded bg-muted overflow-auto mb-6">
               <pre className="text-sm text-muted-foreground whitespace-break-spaces">
                 {this.state.error?.message}
               </pre>
             </div>
-
             <button
               onClick={() => window.location.reload()}
               className={cn(
-                "flex items-center gap-2 px-4 py-2 rounded-lg",
-                "bg-primary text-primary-foreground",
-                "hover:opacity-90 cursor-pointer"
+                "flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:opacity-90"
               )}
             >
-              <RotateCcw size={16} />
-              Tải lại trang
+              <RotateCcw size={16} /> Tải lại trang
             </button>
           </div>
         </div>
       );
     }
-
     return this.props.children;
   }
 }
